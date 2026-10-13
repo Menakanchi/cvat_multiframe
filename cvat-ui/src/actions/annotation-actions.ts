@@ -146,6 +146,7 @@ export enum AnnotationActionTypes {
     CHANGE_ANNOTATIONS_FILTERS = 'CHANGE_ANNOTATIONS_FILTERS',
     CHANGE_SHOW_SEARCH_FRAMES_MODAL = 'CHANGE_SHOW_SEARCH_FRAMES_MODAL',
     SWITCH_SHOW_MULTIFRAME_MODAL = 'SWITCH_SHOW_MULTIFRAME_MODAL',
+    ACTIVATE_MULTIFRAME_WORKSPACE = 'ACTIVATE_MULTIFRAME_WORKSPACE',
     FETCH_ANNOTATIONS_SUCCESS = 'FETCH_ANNOTATIONS_SUCCESS',
     FETCH_ANNOTATIONS_FAILED = 'FETCH_ANNOTATIONS_FAILED',
     ROTATE_FRAME = 'ROTATE_FRAME',
@@ -711,6 +712,21 @@ export function switchShowMultiframeModal(visible: boolean): AnyAction {
         type: AnnotationActionTypes.SWITCH_SHOW_MULTIFRAME_MODAL,
         payload: {
             visible,
+        },
+    };
+}
+
+export function activateMultiframeWorkspace(
+    active: boolean,
+    startFrame: number | null = null,
+    endFrame: number | null = null,
+): AnyAction {
+    return {
+        type: AnnotationActionTypes.ACTIVATE_MULTIFRAME_WORKSPACE,
+        payload: {
+            active,
+            startFrame,
+            endFrame,
         },
     };
 }

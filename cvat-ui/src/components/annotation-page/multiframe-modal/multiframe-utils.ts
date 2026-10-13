@@ -12,6 +12,7 @@ export function validateFrameRange(
     endFrame: number | null | undefined,
     jobStartFrame: number,
     jobStopFrame: number,
+    validFrameNumbers?: number[],
 ): FrameRangeValidation {
     if (startFrame === null || startFrame === undefined || !Number.isInteger(startFrame)) {
         return { isValid: false, error: 'Start frame must be a valid integer' };
@@ -37,6 +38,17 @@ export function validateFrameRange(
             error: `Start frame (${startFrame}) cannot be greater than end frame (${endFrame})`,
         };
     }
+    if (Array.isArray(validFrameNumbers) && validFrameNumbers.length > 0) {
+        const hasValidInRequestedRange = validFrameNumbers.some(
+            (fn) => fn >= startFrame && fn <= endFrame,
+        );
+        if (!hasValidInRequestedRange) {
+            return {
+                isValid: false,
+                error: `No valid frames belonging to this job in range [${startFrame}, ${endFrame}]`,
+            };
+        }
+    }
     return { isValid: true, error: null };
 }
 
@@ -44,14 +56,38 @@ export function getDefaultFrameRange(
     currentFrame: number,
     jobStartFrame: number,
     jobStopFrame: number,
+    validFrameNumbers?: number[],
 ): [number, number] {
+    if (Array.isArray(validFrameNumbers) && validFrameNumbers.length > 0) {
+        const currentIndex = validFrameNumbers.indexOf(currentFrame);
+        if (currentIndex !== -1) {
+            const startIdx = Math.max(0, currentIndex - 4);
+            const endIdx = Math.min(validFrameNumbers.length - 1, Math.max(startIdx, currentIndex + 5));
+            return [validFrameNumbers[startIdx], validFrameNumbers[endIdx]];
+        }
+        const minFrame = validFrameNumbers[0];
+        const maxFrame = validFrameNumbers[validFrameNumbers.length - 1];
+        const start = Math.max(minFrame, currentFrame - 4);
+        const end = Math.min(maxFrame, Math.max(start, currentFrame + 5));
+        return [start, end];
+    }
     const clampedCurrent = Math.max(jobStartFrame, Math.min(jobStopFrame, currentFrame));
     const start = Math.max(jobStartFrame, clampedCurrent - 4);
     const end = Math.min(jobStopFrame, Math.max(start, clampedCurrent + 5));
     return [start, end];
 }
 
-export function getTotalBatches(rangeStart: number, rangeEnd: number, batchSize = 10): number {
+export function getTotalBatches(
+    rangeStart: number,
+    rangeEnd: number,
+    batchSize = 10,
+    validFrameNumbers?: number[],
+): number {
+    if (Array.isArray(validFrameNumbers) && validFrameNumbers.length > 0) {
+        const framesInRange = validFrameNumbers.filter((f) => f >= rangeStart && f <= rangeEnd);
+        if (framesInRange.length === 0) return 0;
+        return Math.ceil(framesInRange.length / batchSize);
+    }
     const totalFrames = rangeEnd - rangeStart + 1;
     if (totalFrames <= 0) return 0;
     return Math.ceil(totalFrames / batchSize);
@@ -62,7 +98,15 @@ export function getBatchFrames(
     rangeStart: number,
     rangeEnd: number,
     batchSize = 10,
+    validFrameNumbers?: number[],
 ): number[] {
+    if (Array.isArray(validFrameNumbers) && validFrameNumbers.length > 0) {
+        const framesInRange = validFrameNumbers.filter((f) => f >= rangeStart && f <= rangeEnd);
+        const startIdx = batchIndex * batchSize;
+        const endIdx = Math.min(framesInRange.length, startIdx + batchSize);
+        if (startIdx >= framesInRange.length) return [];
+        return framesInRange.slice(startIdx, endIdx);
+    }
     const start = rangeStart + batchIndex * batchSize;
     const end = Math.min(rangeEnd, start + batchSize - 1);
     if (start > end) return [];

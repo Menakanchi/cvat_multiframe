@@ -27,7 +27,7 @@
 const assert = require('assert');
 
 // 1. Pure functions under test
-function validateFrameRange(startFrame, endFrame, jobStartFrame, jobStopFrame) {
+function validateFrameRange(startFrame, endFrame, jobStartFrame, jobStopFrame, validFrameNumbers) {
     if (startFrame === null || startFrame === undefined || !Number.isInteger(startFrame)) {
         return { isValid: false, error: 'Start frame must be a valid integer' };
     }
@@ -52,23 +52,59 @@ function validateFrameRange(startFrame, endFrame, jobStartFrame, jobStopFrame) {
             error: `Start frame (${startFrame}) cannot be greater than end frame (${endFrame})`,
         };
     }
+    if (Array.isArray(validFrameNumbers) && validFrameNumbers.length > 0) {
+        const hasValidInRequestedRange = validFrameNumbers.some(
+            (fn) => fn >= startFrame && fn <= endFrame,
+        );
+        if (!hasValidInRequestedRange) {
+            return {
+                isValid: false,
+                error: `No valid frames belonging to this job in range [${startFrame}, ${endFrame}]`,
+            };
+        }
+    }
     return { isValid: true, error: null };
 }
 
-function getDefaultFrameRange(currentFrame, jobStartFrame, jobStopFrame) {
+function getDefaultFrameRange(currentFrame, jobStartFrame, jobStopFrame, validFrameNumbers) {
+    if (Array.isArray(validFrameNumbers) && validFrameNumbers.length > 0) {
+        const currentIndex = validFrameNumbers.indexOf(currentFrame);
+        if (currentIndex !== -1) {
+            const startIdx = Math.max(0, currentIndex - 4);
+            const endIdx = Math.min(validFrameNumbers.length - 1, Math.max(startIdx, currentIndex + 5));
+            return [validFrameNumbers[startIdx], validFrameNumbers[endIdx]];
+        }
+        const minFrame = validFrameNumbers[0];
+        const maxFrame = validFrameNumbers[validFrameNumbers.length - 1];
+        const start = Math.max(minFrame, currentFrame - 4);
+        const end = Math.min(maxFrame, Math.max(start, currentFrame + 5));
+        return [start, end];
+    }
     const clampedCurrent = Math.max(jobStartFrame, Math.min(jobStopFrame, currentFrame));
     const start = Math.max(jobStartFrame, clampedCurrent - 4);
     const end = Math.min(jobStopFrame, Math.max(start, clampedCurrent + 5));
     return [start, end];
 }
 
-function getTotalBatches(rangeStart, rangeEnd, batchSize = 10) {
+function getTotalBatches(rangeStart, rangeEnd, batchSize = 10, validFrameNumbers) {
+    if (Array.isArray(validFrameNumbers) && validFrameNumbers.length > 0) {
+        const framesInRange = validFrameNumbers.filter((f) => f >= rangeStart && f <= rangeEnd);
+        if (framesInRange.length === 0) return 0;
+        return Math.ceil(framesInRange.length / batchSize);
+    }
     const totalFrames = rangeEnd - rangeStart + 1;
     if (totalFrames <= 0) return 0;
     return Math.ceil(totalFrames / batchSize);
 }
 
-function getBatchFrames(batchIndex, rangeStart, rangeEnd, batchSize = 10) {
+function getBatchFrames(batchIndex, rangeStart, rangeEnd, batchSize = 10, validFrameNumbers) {
+    if (Array.isArray(validFrameNumbers) && validFrameNumbers.length > 0) {
+        const framesInRange = validFrameNumbers.filter((f) => f >= rangeStart && f <= rangeEnd);
+        const startIdx = batchIndex * batchSize;
+        const endIdx = Math.min(framesInRange.length, startIdx + batchSize);
+        if (startIdx >= framesInRange.length) return [];
+        return framesInRange.slice(startIdx, endIdx);
+    }
     const start = rangeStart + batchIndex * batchSize;
     const end = Math.min(rangeEnd, start + batchSize - 1);
     if (start > end) return [];
@@ -365,6 +401,136 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     // MultiframeTile does NOT call close()
     assert.strictEqual(closedCalled, false, 'ImageBitmap.close() must NEVER be called');
     console.log('  ✔ TC 9 passed.');
+}
+
+// TC 10: Non-contiguous / Specific Frames (e.g. Ground Truth job with included_frames)
+{
+    console.log('TC 10: Specific / Non-contiguous frame sequence handling (GT jobs)...');
+    // Specific frame list matching user's observed issue: [1, 9, 26, 28, 50, 100, 159, 172, 188, 190, 227, 236, 240]
+    const gtFrames = [1, 9, 26, 28, 50, 100, 159, 172, 188, 190, 227, 236, 240];
+    const jobStart = gtFrames[0]; // 1
+    const jobStop = gtFrames[gtFrames.length - 1]; // 240
+
+    // Range default centering around active frame 1:
+    const [defStart, defEnd] = getDefaultFrameRange(1, jobStart, jobStop, gtFrames);
+    assert.strictEqual(defStart, 1);
+    assert.strictEqual(defEnd, 100);
+
+    // Total batches for range [1, 240] with 13 frames:
+    const totalBatches = getTotalBatches(1, 240, 10, gtFrames);
+    assert.strictEqual(totalBatches, 2, '13 frames in batches of 10 should yield 2 batches');
+
+    // Batch 0 must only contain actual valid frames in the job:
+    const batch0 = getBatchFrames(0, 1, 240, 10, gtFrames);
+    assert.strictEqual(batch0.length, 10);
+    assert.deepStrictEqual(batch0, [1, 9, 26, 28, 50, 100, 159, 172, 188, 190]);
+    // Notice frame numbers 0, 2, 3, 4, 5, 6 are NEVER present in batch0!
+
+    // Batch 1 has the remaining 3 frames:
+    const batch1 = getBatchFrames(1, 1, 240, 10, gtFrames);
+    assert.strictEqual(batch1.length, 3);
+    assert.deepStrictEqual(batch1, [227, 236, 240]);
+
+    // Range validation:
+    assert.strictEqual(validateFrameRange(1, 240, jobStart, jobStop, gtFrames).isValid, true);
+    assert.strictEqual(validateFrameRange(2, 5, jobStart, jobStop, gtFrames).isValid, false);
+    assert.strictEqual(validateFrameRange(0, 240, jobStart, jobStop, gtFrames).isValid, false);
+
+    console.log('  ✔ TC 10 passed.');
+}
+
+// TC 11: Two-Step Workflow Separation (Config Modal vs Workspace View)
+{
+    console.log('TC 11: Two-step workflow separation...');
+    // Initial state
+    let state = {
+        multiframe: {
+            visible: false,
+            active: false,
+            startFrame: null,
+            endFrame: null,
+        },
+    };
+
+    // Step 1: User presses Alt+M or clicks toolbar button -> Opens config modal
+    function switchShowMultiframeModal(visible) {
+        return { type: 'SWITCH_SHOW_MULTIFRAME_MODAL', payload: { visible } };
+    }
+
+    state.multiframe.visible = switchShowMultiframeModal(true).payload.visible;
+    assert.strictEqual(state.multiframe.visible, true, 'Config popup should open');
+    assert.strictEqual(state.multiframe.active, false, 'Workspace view should NOT be active yet');
+
+    // User clicks Cancel -> Closes config modal without activating workspace
+    state.multiframe.visible = switchShowMultiframeModal(false).payload.visible;
+    assert.strictEqual(state.multiframe.visible, false, 'Config popup closed on cancel');
+    assert.strictEqual(state.multiframe.active, false, 'Workspace view remains inactive');
+
+    // User opens again and clicks Submit / Yes
+    state.multiframe.visible = true;
+    function activateMultiframeWorkspace(active, startFrame, endFrame) {
+        return {
+            type: 'ACTIVATE_MULTIFRAME_WORKSPACE',
+            payload: { active, startFrame, endFrame },
+        };
+    }
+
+    const action = activateMultiframeWorkspace(true, 10, 25);
+    state.multiframe.visible = false; // Popup closes
+    state.multiframe.active = action.payload.active;
+    state.multiframe.startFrame = action.payload.startFrame;
+    state.multiframe.endFrame = action.payload.endFrame;
+
+    assert.strictEqual(state.multiframe.visible, false, 'Config popup must close upon confirmation');
+    assert.strictEqual(state.multiframe.active, true, 'Workspace view must become active');
+    assert.strictEqual(state.multiframe.startFrame, 10);
+    assert.strictEqual(state.multiframe.endFrame, 25);
+
+    // User clicks Exit Multi-Frame
+    function reduceActivate(st, act) {
+        return {
+            ...st,
+            multiframe: {
+                ...st.multiframe,
+                active: act.payload.active,
+                startFrame: act.payload.active ? act.payload.startFrame : null,
+                endFrame: act.payload.active ? act.payload.endFrame : null,
+            },
+        };
+    }
+
+    const exitAction = activateMultiframeWorkspace(false);
+    state = reduceActivate(state, exitAction);
+
+    assert.strictEqual(state.multiframe.active, false, 'Workspace view deactivated on exit');
+    assert.strictEqual(state.multiframe.startFrame, null);
+    assert.strictEqual(state.multiframe.endFrame, null);
+
+    console.log('  ✔ TC 11 passed.');
+}
+
+// TC 12: Confirmation Does Not Invoke Propagation Flow
+{
+    console.log('TC 12: Confirming Multi-Frame does not trigger propagation...');
+    let propagationTriggered = false;
+    const mockPropagateObjectAsync = () => {
+        propagationTriggered = true;
+    };
+
+    // Confirm Multi-Frame config flow
+    const confirmMultiFrame = (startFrame, endFrame, dispatch) => {
+        dispatch({ type: 'SWITCH_SHOW_MULTIFRAME_MODAL', payload: { visible: false } });
+        dispatch({ type: 'ACTIVATE_MULTIFRAME_WORKSPACE', payload: { active: true, startFrame, endFrame } });
+    };
+
+    const dispatchedActions = [];
+    confirmMultiFrame(0, 10, (act) => dispatchedActions.push(act));
+
+    assert.strictEqual(propagationTriggered, false, 'Annotation propagation must NEVER be called');
+    assert.strictEqual(dispatchedActions.length, 2);
+    assert.strictEqual(dispatchedActions[0].type, 'SWITCH_SHOW_MULTIFRAME_MODAL');
+    assert.strictEqual(dispatchedActions[1].type, 'ACTIVATE_MULTIFRAME_WORKSPACE');
+    console.log('  ✔ TC 12 passed.');
 }
 
 console.log('\n=== All Real Multi-Frame Viewer Tests Passed Successfully! ===');

@@ -182,6 +182,9 @@ const defaultState: AnnotationState = {
     },
     multiframe: {
         visible: false,
+        active: false,
+        startFrame: null,
+        endFrame: null,
     },
     propagate: {
         visible: false,
@@ -524,6 +527,19 @@ export default (state = defaultState, action: AnyAction): AnnotationState => {
                 multiframe: {
                     ...state.multiframe,
                     visible,
+                },
+            };
+        }
+        case AnnotationActionTypes.ACTIVATE_MULTIFRAME_WORKSPACE: {
+            const { active, startFrame, endFrame } = action.payload;
+
+            return {
+                ...state,
+                multiframe: {
+                    ...state.multiframe,
+                    active,
+                    startFrame: active ? startFrame : null,
+                    endFrame: active ? endFrame : null,
                 },
             };
         }

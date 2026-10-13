@@ -1010,6 +1010,9 @@ export interface AnnotationState {
     };
     multiframe: {
         visible: boolean;
+        active: boolean;
+        startFrame: number | null;
+        endFrame: number | null;
     };
     propagate: {
         visible: boolean;
