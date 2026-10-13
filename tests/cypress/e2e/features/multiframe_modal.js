@@ -4,8 +4,8 @@
 
 /// <reference types="cypress" />
 
-context('Multi-Frame Modal Shell and Shortcut Verification (Milestone B1)', () => {
-    const taskName = 'Multi-Frame Modal Test Task';
+context('Real Multi-Frame Annotation Viewer & Landmark Verification', () => {
+    const taskName = 'Real Multi-Frame Viewer Test Task';
     const serverFiles = ['images/image_1.jpg'];
     let taskId = null;
     let jobId = null;
@@ -39,24 +39,28 @@ context('Multi-Frame Modal Shell and Shortcut Verification (Milestone B1)', () =
         }
     });
 
-    it('TC 1: Alt+M opens the multi-frame modal', () => {
+    it('TC 1: Alt+M opens the real multi-frame viewer', () => {
         cy.get('body').type('{alt}m');
         cy.get('.cvat-multiframe-modal').should('be.visible');
-        cy.get('.cvat-multiframe-modal .ant-modal-title').should('contain', 'Multi-Frame Verification');
+        cy.get('.cvat-multiframe-modal .ant-modal-title').should('contain', 'Multi-Frame Landmark Verification');
+        cy.get('.cvat-multiframe-grid').should('be.visible');
+        cy.get('.cvat-multiframe-tile').should('have.length.at.least', 1);
+        cy.get('.cvat-multiframe-tile-active').should('exist');
     });
 
-    it('TC 2: Escape closes the modal', () => {
+    it('TC 2: Escape closes the viewer', () => {
         cy.get('body').type('{esc}');
         cy.get('.cvat-multiframe-modal').should('not.exist');
     });
 
-    it('TC 3: Visible toolbar button opens the same modal', () => {
+    it('TC 3: Visible toolbar button opens the same viewer', () => {
         cy.get('.cvat-player-multiframe-icon').should('be.visible').click();
         cy.get('.cvat-multiframe-modal').should('be.visible');
+        cy.get('.cvat-multiframe-grid').should('be.visible');
     });
 
-    it('TC 4: Cancel button closes the modal', () => {
-        cy.get('.cvat-multiframe-cancel-btn').click();
+    it('TC 4: Close button closes the viewer', () => {
+        cy.get('.cvat-multiframe-close-btn').click();
         cy.get('.cvat-multiframe-modal').should('not.exist');
     });
 
@@ -67,41 +71,23 @@ context('Multi-Frame Modal Shell and Shortcut Verification (Milestone B1)', () =
         cy.get('.cvat-player-frame-selector input').blur();
     });
 
-    it('TC 6: Start and End frame range validation', () => {
+    it('TC 6: Displays real frame canvas tiles (up to 10) and SVG overlays', () => {
         cy.get('.cvat-player-multiframe-icon').click();
         cy.get('.cvat-multiframe-modal').should('be.visible');
-
-        // Verify inputs exist
-        cy.get('.cvat-multiframe-start-input input').should('exist');
-        cy.get('.cvat-multiframe-end-input input').should('exist');
-
-        // Test Start > End rejection
-        cy.get('.cvat-multiframe-start-input input').clear().type('50');
-        cy.get('.cvat-multiframe-end-input input').clear().type('10');
-        cy.get('.cvat-multiframe-error-alert').should('be.visible');
-        cy.get('.cvat-multiframe-apply-btn').should('be.disabled');
-
-        // Restore valid range
-        cy.get('.cvat-multiframe-start-input input').clear().type('0');
-        cy.get('.cvat-multiframe-end-input input').clear().type('0');
-        cy.get('.cvat-multiframe-error-alert').should('not.exist');
-        cy.get('.cvat-multiframe-apply-btn').should('not.be.disabled');
-
-        cy.get('.cvat-multiframe-cancel-btn').click();
-        cy.get('.cvat-multiframe-modal').should('not.exist');
+        cy.get('.cvat-multiframe-tile').should('have.length.at.most', 10);
+        cy.get('.cvat-multiframe-tile .cvat-multiframe-canvas').should('exist');
+        cy.get('.cvat-multiframe-tile .cvat-multiframe-svg-overlay').should('exist');
+        cy.get('.cvat-multiframe-close-btn').click();
     });
 
-    it('TC 7: Opening and closing the modal does not mark annotations unsaved or mutate state', () => {
-        // Save button should remain disabled (no unsaved changes)
+    it('TC 7: Opening and closing the viewer does not mark annotations unsaved or mutate state', () => {
         cy.get('.cvat-save-annotations-button').should('be.disabled');
 
-        // Open and close via trigger
         cy.get('.cvat-player-multiframe-icon').click();
         cy.get('.cvat-multiframe-modal').should('be.visible');
-        cy.get('.cvat-multiframe-cancel-btn').click();
+        cy.get('.cvat-multiframe-close-btn').click();
         cy.get('.cvat-multiframe-modal').should('not.exist');
 
-        // Verify save button is still disabled
         cy.get('.cvat-save-annotations-button').should('be.disabled');
     });
 });
