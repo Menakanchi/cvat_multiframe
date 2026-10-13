@@ -9,7 +9,7 @@ import React, {
 
 import { Row, Col } from 'antd/lib/grid';
 import Icon, {
-    LinkOutlined, DeleteOutlined, CopyOutlined, SearchOutlined,
+    LinkOutlined, DeleteOutlined, CopyOutlined, SearchOutlined, AppstoreOutlined,
 } from '@ant-design/icons';
 import Slider, { SliderMarks } from 'antd/lib/slider';
 import InputNumber from 'antd/lib/input-number';
@@ -42,6 +42,7 @@ interface Props {
     focusFrameInputShortcut: string;
     searchFrameByNameShortcut: string;
     showSearchFrameByName: boolean;
+    openMultiframeShortcut: string;
     inputFrameRef: React.RefObject<HTMLInputElement>;
     keyMap: KeyMap;
     workspace: Workspace;
@@ -53,6 +54,7 @@ interface Props {
     onRestoreFrame(): void;
     switchNavigationBlocked(blocked: boolean): void;
     switchShowSearchPallet(visible: boolean): void;
+    switchShowMultiframeModal(visible: boolean): void;
 }
 
 const componentShortcuts = {
@@ -73,6 +75,12 @@ const componentShortcuts = {
         name: 'Search frame by name',
         description: 'Open search frame by name dialog',
         sequences: [],
+        scope: ShortcutScope.ANNOTATION_PAGE,
+    },
+    OPEN_MULTIFRAME: {
+        name: 'Multi-frame verification',
+        description: 'Open multi-frame annotation and verification modal',
+        sequences: ['alt+m'],
         scope: ShortcutScope.ANNOTATION_PAGE,
     },
 };
@@ -104,6 +112,8 @@ function PlayerNavigation(props: Props): JSX.Element {
         onRestoreFrame,
         switchNavigationBlocked,
         switchShowSearchPallet,
+        switchShowMultiframeModal,
+        openMultiframeShortcut,
         showSearchFrameByName,
     } = props;
 
@@ -156,6 +166,10 @@ function PlayerNavigation(props: Props): JSX.Element {
                 event?.preventDefault();
                 switchShowSearchPallet(true);
             }
+        },
+        OPEN_MULTIFRAME: (event: KeyboardEvent | undefined) => {
+            event?.preventDefault();
+            switchShowMultiframeModal(true);
         },
     };
 
@@ -291,6 +305,12 @@ function PlayerNavigation(props: Props): JSX.Element {
                         </CVATTooltip>
                     )
                 }
+                <CVATTooltip title={`Multi-frame verification ${openMultiframeShortcut}`}>
+                    <AppstoreOutlined
+                        className='cvat-player-multiframe-icon'
+                        onClick={() => switchShowMultiframeModal(true)}
+                    />
+                </CVATTooltip>
             </Col>
         </>
     );

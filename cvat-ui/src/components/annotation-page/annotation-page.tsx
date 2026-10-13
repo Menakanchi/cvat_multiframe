@@ -29,6 +29,7 @@ import { readLatestFrame } from 'utils/remember-latest-frame';
 import { EventScope } from 'cvat-core/src/enums';
 import { filterApplicableForType } from 'utils/filter-applicable-labels';
 import SearchFramesModal from './top-bar/search-modal';
+import MultiframeModal from './multiframe-modal/multiframe-modal';
 
 interface Props {
     job: Job | null | undefined;
@@ -168,6 +169,7 @@ export default function AnnotationPageComponent(props: Props): JSX.Element {
             <FiltersModalComponent />
             <StatisticsModalComponent />
             <SearchFramesModal />
+            <MultiframeModal />
         </Layout>
     );
 }

@@ -88,7 +88,7 @@ const componentShortcuts: Record<string, KeyMapItem> = {
     SWITCH_SPLIT_MODE_STANDARD_3D_CONTROLS: {
         name: 'Split mode',
         description: 'Activate or deactivate mode to splitting shapes',
-        sequences: ['alt+m'],
+        sequences: ['shift+m'],
         scope: ShortcutScope['3D_ANNOTATION_WORKSPACE_CONTROLS'],
     },
 };

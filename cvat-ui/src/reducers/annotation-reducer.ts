@@ -180,6 +180,9 @@ const defaultState: AnnotationState = {
     search: {
         visible: false,
     },
+    multiframe: {
+        visible: false,
+    },
     propagate: {
         visible: false,
     },
@@ -509,6 +512,17 @@ export default (state = defaultState, action: AnyAction): AnnotationState => {
                 ...state,
                 search: {
                     ...state.search,
+                    visible,
+                },
+            };
+        }
+        case AnnotationActionTypes.SWITCH_SHOW_MULTIFRAME_MODAL: {
+            const { visible } = action.payload;
+
+            return {
+                ...state,
+                multiframe: {
+                    ...state.multiframe,
                     visible,
                 },
             };

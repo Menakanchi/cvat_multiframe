@@ -1007,7 +1007,10 @@ export interface AnnotationState {
     };
     search: {
         visible: boolean;
-    }
+    };
+    multiframe: {
+        visible: boolean;
+    };
     propagate: {
         visible: boolean;
     };

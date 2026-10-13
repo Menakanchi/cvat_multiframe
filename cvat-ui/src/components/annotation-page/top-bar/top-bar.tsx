@@ -81,6 +81,8 @@ interface Props {
     switchNavigationBlocked(blocked: boolean): void;
     setNavigationType(navigationType: NavigationType): void;
     switchShowSearchPallet(visible: boolean): void;
+    switchShowMultiframeModal(visible: boolean): void;
+    openMultiframeShortcut: string;
 }
 
 export default function AnnotationTopBarComponent(props: Props): JSX.Element {
@@ -146,6 +148,8 @@ export default function AnnotationTopBarComponent(props: Props): JSX.Element {
         setNavigationType,
         switchNavigationBlocked,
         switchShowSearchPallet,
+        switchShowMultiframeModal,
+        openMultiframeShortcut,
         showSearchFrameByName,
     } = props;
 
@@ -205,6 +209,8 @@ export default function AnnotationTopBarComponent(props: Props): JSX.Element {
             onRestoreFrame={onRestoreFrame}
             switchNavigationBlocked={switchNavigationBlocked}
             switchShowSearchPallet={switchShowSearchPallet}
+            switchShowMultiframeModal={switchShowMultiframeModal}
+            openMultiframeShortcut={openMultiframeShortcut}
             showSearchFrameByName={showSearchFrameByName}
         />
     ), 10]);

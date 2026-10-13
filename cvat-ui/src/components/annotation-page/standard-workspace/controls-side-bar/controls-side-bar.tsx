@@ -114,7 +114,7 @@ const componentShortcuts = {
     SWITCH_SPLIT_MODE_STANDARD_CONTROLS: {
         name: 'Split mode',
         description: 'Activate or deactivate mode to splitting shapes',
-        sequences: ['alt+m'],
+        sequences: ['shift+m'],
         scope: ShortcutScope.STANDARD_WORKSPACE_CONTROLS,
     },
 };

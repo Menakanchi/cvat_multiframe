@@ -26,6 +26,7 @@ import {
     switchNavigationBlocked as switchNavigationBlockedAction,
     switchPlay,
     switchShowSearchFramesModal as switchShowSearchFramesModalAction,
+    switchShowMultiframeModal as switchShowMultiframeModalAction,
     undoActionAsync,
 } from 'actions/annotation-actions';
 import AnnotationTopBarComponent from 'components/annotation-page/top-bar/top-bar';
@@ -86,6 +87,7 @@ interface DispatchToProps {
     onChangeFrame(frame: number, fillBuffer?: boolean, frameStep?: number): void;
     onSwitchPlay(playing: boolean): void;
     switchShowSearchPallet(visible: boolean): void;
+    switchShowMultiframeModal(visible: boolean): void;
     onSaveAnnotation(): void;
     showStatistics(sessionInstance: Job): void;
     showFilters(): void;
@@ -228,6 +230,9 @@ function mapDispatchToProps(dispatch: any): DispatchToProps {
         },
         switchShowSearchPallet(visible: boolean): void {
             dispatch(switchShowSearchFramesModalAction(visible));
+        },
+        switchShowMultiframeModal(visible: boolean): void {
+            dispatch(switchShowMultiframeModalAction(visible));
         },
         undo(): void {
             dispatch(undoActionAsync());
@@ -759,6 +764,7 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
             switchNavigationBlocked,
             setNavigationType,
             switchShowSearchPallet,
+            switchShowMultiframeModal,
             showSearchFrameByName,
         } = this.props;
         const maskHistoryMode = [ActiveControl.DRAW_MASK, ActiveControl.EDIT].includes(activeControl);
@@ -794,6 +800,8 @@ class AnnotationTopBarContainer extends React.PureComponent<Props> {
                 onRestoreFrame={this.onRestoreFrame}
                 changeWorkspace={this.changeWorkspace}
                 switchShowSearchPallet={switchShowSearchPallet}
+                switchShowMultiframeModal={switchShowMultiframeModal}
+                openMultiframeShortcut={normalizedKeyMap.OPEN_MULTIFRAME}
                 showSearchFrameByName={showSearchFrameByName}
                 switchNavigationBlocked={switchNavigationBlocked}
                 keyMap={keyMap}
