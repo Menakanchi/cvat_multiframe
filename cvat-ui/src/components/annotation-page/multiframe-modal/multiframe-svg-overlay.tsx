@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import { Viewport } from './multiframe-utils';
 
 interface Props {
@@ -12,11 +12,22 @@ interface Props {
     states: any[];
     matchedClientID: number | null;
     isOccluded?: boolean;
+    activeClientID?: number | null;
+    activeElementID?: number | null;
+    onSelectObject?(state: any, elementState?: any): void;
+    onEditLandmark?(parentState: any, elementState: any, newPoints: [number, number]): void;
 }
 
 interface SkeletonEdge {
     from: number;
     to: number;
+}
+
+interface DragState {
+    parentState: any;
+    elementState: any;
+    initialPoint: [number, number];
+    currentPoint: [number, number];
 }
 
 function parseSkeletonEdges(label: any): SkeletonEdge[] {
@@ -51,7 +62,16 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
         states,
         matchedClientID,
         isOccluded,
+        activeClientID,
+        activeElementID,
+        onSelectObject,
+        onEditLandmark,
     } = props;
+
+    const svgRef = useRef<SVGSVGElement | null>(null);
+    const [dragState, setDragState] = useState<DragState | null>(null);
+    const dragStateRef = useRef<DragState | null>(null);
+    dragStateRef.current = dragState;
 
     const vpX = viewport?.x ?? 0;
     const vpY = viewport?.y ?? 0;
@@ -73,8 +93,72 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
         return cache;
     }, [states]);
 
+    const handleLandmarkMouseDown = useCallback((
+        e: React.MouseEvent,
+        parentState: any,
+        elementState: any,
+        initialX: number,
+        initialY: number,
+    ) => {
+        e.stopPropagation();
+        e.preventDefault();
+        setDragState({
+            parentState,
+            elementState,
+            initialPoint: [initialX, initialY],
+            currentPoint: [initialX, initialY],
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!dragState) return;
+
+        const onMouseMove = (e: MouseEvent) => {
+            if (!svgRef.current || !dragStateRef.current) return;
+            const svg = svgRef.current;
+            const pt = svg.createSVGPoint();
+            pt.x = e.clientX;
+            pt.y = e.clientY;
+            const ctm = svg.getScreenCTM();
+            if (!ctm) return;
+            const svgPt = pt.matrixTransform(ctm.inverse());
+            const clampedX = Math.round(Math.max(0, Math.min(width, svgPt.x)));
+            const clampedY = Math.round(Math.max(0, Math.min(height, svgPt.y)));
+
+            setDragState((prev) => (prev ? {
+                ...prev,
+                currentPoint: [clampedX, clampedY],
+            } : null));
+        };
+
+        const onMouseUp = () => {
+            const currentDrag = dragStateRef.current;
+            if (currentDrag) {
+                const [initX, initY] = currentDrag.initialPoint;
+                const [curX, curY] = currentDrag.currentPoint;
+                const dist = Math.hypot(curX - initX, curY - initY);
+                if (dist > 0.5 && onEditLandmark) {
+                    onEditLandmark(currentDrag.parentState, currentDrag.elementState, [curX, curY]);
+                }
+                if (onSelectObject) {
+                    onSelectObject(currentDrag.parentState, currentDrag.elementState);
+                }
+            }
+            setDragState(null);
+        };
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+
+        return () => {
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
+        };
+    }, [dragState !== null, width, height, onEditLandmark, onSelectObject]);
+
     return (
         <svg
+            ref={svgRef}
             className='cvat-multiframe-svg-overlay'
             viewBox={`${vpX} ${vpY} ${vpW} ${vpH}`}
             style={{
@@ -110,8 +194,18 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                 if (!fromEl || !toEl || fromEl.outside || toEl.outside) {
                                     return null;
                                 }
-                                const [x1, y1] = fromEl.points || [];
-                                const [x2, y2] = toEl.points || [];
+
+                                let [x1, y1] = fromEl.points || [];
+                                let [x2, y2] = toEl.points || [];
+
+                                // Live dynamic stretching during drag
+                                if (dragState && dragState.elementState.clientID === fromEl.clientID) {
+                                    [x1, y1] = dragState.currentPoint;
+                                }
+                                if (dragState && dragState.elementState.clientID === toEl.clientID) {
+                                    [x2, y2] = dragState.currentPoint;
+                                }
+
                                 if (x1 === undefined || y1 === undefined || x2 === undefined || y2 === undefined) {
                                     return null;
                                 }
@@ -136,62 +230,89 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                 if (el.outside || !Array.isArray(el.points) || el.points.length < 2) {
                                     return null;
                                 }
-                                const [x, y] = el.points;
-                                const isMatched = el.clientID === matchedClientID;
 
-                                if (isMatched) {
-                                    return (
-                                        <g key={`el_${el.clientID}`}>
-                                            {/* Pulsing cyan highlight ring */}
+                                const isBeingDragged = dragState?.elementState?.clientID === el.clientID;
+                                const [x, y] = isBeingDragged ? dragState.currentPoint : el.points;
+                                const isMatched = el.clientID === matchedClientID || el.clientID === activeElementID;
+
+                                return (
+                                    <g key={`el_${el.clientID}`}>
+                                        {/* Invisible enlarged hit target for easy clicking and dragging */}
+                                        <circle
+                                            cx={x}
+                                            cy={y}
+                                            r={Math.max(8, 16 * scaleFactor)}
+                                            fill='transparent'
+                                            style={{
+                                                pointerEvents: 'all',
+                                                cursor: isBeingDragged ? 'grabbing' : 'grab',
+                                            }}
+                                            onMouseDown={(e) => handleLandmarkMouseDown(e, state, el, x, y)}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (onSelectObject) {
+                                                    onSelectObject(state, el);
+                                                }
+                                            }}
+                                        />
+
+                                        {isMatched ? (
+                                            <>
+                                                {/* Pulsing cyan highlight ring */}
+                                                <circle
+                                                    cx={x}
+                                                    cy={y}
+                                                    r={Math.max(4, 10 * scaleFactor)}
+                                                    fill='none'
+                                                    stroke='#00f0ff'
+                                                    strokeWidth={2.5}
+                                                    vectorEffect='non-scaling-stroke'
+                                                    strokeDasharray={isOccluded ? '3,3' : undefined}
+                                                    className='cvat-multiframe-pulsing-highlight'
+                                                    style={{ pointerEvents: 'none' }}
+                                                />
+                                                {/* Landmark center dot */}
+                                                <circle
+                                                    cx={x}
+                                                    cy={y}
+                                                    r={Math.max(2, 3.5 * scaleFactor)}
+                                                    fill='#00f0ff'
+                                                    stroke='#ffffff'
+                                                    strokeWidth={1}
+                                                    vectorEffect='non-scaling-stroke'
+                                                    style={{ pointerEvents: 'none' }}
+                                                />
+                                                {/* Landmark name label */}
+                                                <text
+                                                    x={x + 8 * scaleFactor}
+                                                    y={y - 8 * scaleFactor}
+                                                    fill='#00f0ff'
+                                                    fontSize={Math.max(9, Math.round(11 * scaleFactor))}
+                                                    fontWeight={700}
+                                                    style={{
+                                                        pointerEvents: 'none',
+                                                        filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))',
+                                                        userSelect: 'none',
+                                                    }}
+                                                >
+                                                    {el.label?.name}
+                                                    {isOccluded ? ' (Occluded)' : ''}
+                                                </text>
+                                            </>
+                                        ) : (
                                             <circle
                                                 cx={x}
                                                 cy={y}
-                                                r={Math.max(4, 10 * scaleFactor)}
-                                                fill='none'
-                                                stroke='#00f0ff'
-                                                strokeWidth={2.5}
-                                                vectorEffect='non-scaling-stroke'
-                                                strokeDasharray={isOccluded ? '3,3' : undefined}
-                                                className='cvat-multiframe-pulsing-highlight'
-                                            />
-                                            {/* Landmark center dot */}
-                                            <circle
-                                                cx={x}
-                                                cy={y}
-                                                r={Math.max(2, 3.5 * scaleFactor)}
-                                                fill='#00f0ff'
+                                                r={Math.max(1.8, 3 * scaleFactor)}
+                                                fill={el.color || state.color || '#52c41a'}
                                                 stroke='#ffffff'
                                                 strokeWidth={1}
                                                 vectorEffect='non-scaling-stroke'
+                                                opacity={0.85}
+                                                style={{ pointerEvents: 'none' }}
                                             />
-                                            {/* Landmark name label */}
-                                            <text
-                                                x={x + 8 * scaleFactor}
-                                                y={y - 8 * scaleFactor}
-                                                fill='#00f0ff'
-                                                fontSize={Math.max(9, Math.round(11 * scaleFactor))}
-                                                fontWeight={700}
-                                                style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}
-                                            >
-                                                {el.label?.name}
-                                                {isOccluded ? ' (Occluded)' : ''}
-                                            </text>
-                                        </g>
-                                    );
-                                }
-
-                                return (
-                                    <circle
-                                        key={`el_${el.clientID}`}
-                                        cx={x}
-                                        cy={y}
-                                        r={Math.max(1.8, 3 * scaleFactor)}
-                                        fill={el.color || state.color || '#52c41a'}
-                                        stroke='#ffffff'
-                                        strokeWidth={1}
-                                        vectorEffect='non-scaling-stroke'
-                                        opacity={0.85}
-                                    />
+                                        )}
+                                    </g>
                                 );
                             })}
                         </g>
@@ -200,61 +321,85 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
 
                 // 2. Standalone Points or Points Tracks
                 if (state.shapeType === 'points' && Array.isArray(state.points)) {
-                    const isMatched = state.clientID === matchedClientID;
+                    const isMatched = state.clientID === matchedClientID || state.clientID === activeClientID;
                     const circles: JSX.Element[] = [];
                     for (let i = 0; i < state.points.length; i += 2) {
-                        const x = state.points[i];
-                        const y = state.points[i + 1];
-                        if (isMatched) {
-                            circles.push(
-                                <g key={`pts_${state.clientID}_${i}`}>
-                                    <circle
-                                        cx={x}
-                                        cy={y}
-                                        r={Math.max(4, 10 * scaleFactor)}
-                                        fill='none'
-                                        stroke='#00f0ff'
-                                        strokeWidth={2.5}
-                                        vectorEffect='non-scaling-stroke'
-                                        strokeDasharray={isOccluded ? '3,3' : undefined}
-                                        className='cvat-multiframe-pulsing-highlight'
-                                    />
-                                    <circle
-                                        cx={x}
-                                        cy={y}
-                                        r={Math.max(2, 3.5 * scaleFactor)}
-                                        fill='#00f0ff'
-                                        stroke='#fff'
-                                        strokeWidth={1}
-                                        vectorEffect='non-scaling-stroke'
-                                    />
-                                    <text
-                                        x={x + 8 * scaleFactor}
-                                        y={y - 8 * scaleFactor}
-                                        fill='#00f0ff'
-                                        fontSize={Math.max(9, Math.round(11 * scaleFactor))}
-                                        fontWeight={700}
-                                        style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}
-                                    >
-                                        {state.label?.name}
-                                    </text>
-                                </g>,
-                            );
-                        } else {
-                            circles.push(
+                        const isBeingDragged = dragState?.elementState?.clientID === state.clientID;
+                        const [x, y] = isBeingDragged ? dragState.currentPoint : [state.points[i], state.points[i + 1]];
+
+                        circles.push(
+                            <g key={`pts_${state.clientID}_${i}`}>
                                 <circle
-                                    key={`pts_${state.clientID}_${i}`}
                                     cx={x}
                                     cy={y}
-                                    r={Math.max(1.8, 3 * scaleFactor)}
-                                    fill={state.color || '#1890ff'}
-                                    stroke='#ffffff'
-                                    strokeWidth={1}
-                                    vectorEffect='non-scaling-stroke'
-                                    opacity={0.85}
-                                />,
-                            );
-                        }
+                                    r={Math.max(8, 16 * scaleFactor)}
+                                    fill='transparent'
+                                    style={{
+                                        pointerEvents: 'all',
+                                        cursor: isBeingDragged ? 'grabbing' : 'grab',
+                                    }}
+                                    onMouseDown={(e) => handleLandmarkMouseDown(e, state, state, x, y)}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (onSelectObject) {
+                                            onSelectObject(state);
+                                        }
+                                    }}
+                                />
+                                {isMatched ? (
+                                    <>
+                                        <circle
+                                            cx={x}
+                                            cy={y}
+                                            r={Math.max(4, 10 * scaleFactor)}
+                                            fill='none'
+                                            stroke='#00f0ff'
+                                            strokeWidth={2.5}
+                                            vectorEffect='non-scaling-stroke'
+                                            strokeDasharray={isOccluded ? '3,3' : undefined}
+                                            className='cvat-multiframe-pulsing-highlight'
+                                            style={{ pointerEvents: 'none' }}
+                                        />
+                                        <circle
+                                            cx={x}
+                                            cy={y}
+                                            r={Math.max(2, 3.5 * scaleFactor)}
+                                            fill='#00f0ff'
+                                            stroke='#fff'
+                                            strokeWidth={1}
+                                            vectorEffect='non-scaling-stroke'
+                                            style={{ pointerEvents: 'none' }}
+                                        />
+                                        <text
+                                            x={x + 8 * scaleFactor}
+                                            y={y - 8 * scaleFactor}
+                                            fill='#00f0ff'
+                                            fontSize={Math.max(9, Math.round(11 * scaleFactor))}
+                                            fontWeight={700}
+                                            style={{
+                                                pointerEvents: 'none',
+                                                filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))',
+                                                userSelect: 'none',
+                                            }}
+                                        >
+                                            {state.label?.name}
+                                        </text>
+                                    </>
+                                ) : (
+                                    <circle
+                                        cx={x}
+                                        cy={y}
+                                        r={Math.max(1.8, 3 * scaleFactor)}
+                                        fill={state.color || '#1890ff'}
+                                        stroke='#ffffff'
+                                        strokeWidth={1}
+                                        vectorEffect='non-scaling-stroke'
+                                        opacity={0.85}
+                                        style={{ pointerEvents: 'none' }}
+                                    />
+                                )}
+                            </g>,
+                        );
                     }
                     return <g key={`points_${state.clientID}`}>{circles}</g>;
                 }
@@ -262,7 +407,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                 // 3. Rectangles
                 if (state.shapeType === 'rectangle' && Array.isArray(state.points) && state.points.length === 4) {
                     const [xtl, ytl, xbr, ybr] = state.points;
-                    const isMatched = state.clientID === matchedClientID;
+                    const isMatched = state.clientID === matchedClientID || state.clientID === activeClientID;
                     return (
                         <rect
                             key={`rect_${state.clientID}`}
@@ -270,12 +415,19 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                             y={ytl}
                             width={Math.max(0, xbr - xtl)}
                             height={Math.max(0, ybr - ytl)}
-                            fill='none'
+                            fill='transparent'
                             stroke={isMatched ? '#00f0ff' : (state.color || '#1890ff')}
                             strokeWidth={isMatched ? 2.5 : 1.5}
                             vectorEffect='non-scaling-stroke'
                             strokeDasharray={isOccluded ? '4,4' : undefined}
                             opacity={0.8}
+                            style={{ pointerEvents: 'all', cursor: 'pointer' }}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                if (onSelectObject) {
+                                    onSelectObject(state);
+                                }
+                            }}
                         />
                     );
                 }
@@ -285,16 +437,23 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                     const pointsStr = state.points.reduce((acc: string, val: number, idx: number) => (
                         `${acc}${idx % 2 === 0 ? ' ' : ','}${val}`
                     ), '').trim();
-                    const isMatched = state.clientID === matchedClientID;
+                    const isMatched = state.clientID === matchedClientID || state.clientID === activeClientID;
                     return (
                         <polygon
                             key={`poly_${state.clientID}`}
                             points={pointsStr}
-                            fill='none'
+                            fill='transparent'
                             stroke={isMatched ? '#00f0ff' : (state.color || '#1890ff')}
                             strokeWidth={isMatched ? 2.5 : 1.5}
                             vectorEffect='non-scaling-stroke'
                             opacity={0.8}
+                            style={{ pointerEvents: 'all', cursor: 'pointer' }}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                if (onSelectObject) {
+                                    onSelectObject(state);
+                                }
+                            }}
                         />
                     );
                 }

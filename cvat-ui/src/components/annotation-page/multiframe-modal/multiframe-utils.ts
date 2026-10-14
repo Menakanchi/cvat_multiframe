@@ -88,48 +88,60 @@ export function getDefaultFrameRange(
     jobStartFrame: number,
     jobStopFrame: number,
     validFrameNumbers?: number[],
+    maxFrames = 16,
 ): [number, number] {
     if (Array.isArray(validFrameNumbers)) {
         if (validFrameNumbers.length === 0) {
             return [0, 0];
         }
         const currentIndex = validFrameNumbers.indexOf(currentFrame);
-        if (currentIndex !== -1) {
-            const startIdx = Math.max(0, currentIndex - 4);
-            const endIdx = Math.min(validFrameNumbers.length - 1, Math.max(startIdx, currentIndex + 5));
-            return [validFrameNumbers[startIdx], validFrameNumbers[endIdx]];
-        }
-        let closestIdx = 0;
-        let minDiff = Infinity;
-        for (let i = 0; i < validFrameNumbers.length; i++) {
-            const diff = Math.abs(validFrameNumbers[i] - currentFrame);
-            if (diff < minDiff) {
-                minDiff = diff;
-                closestIdx = i;
+        const resolvedIdx = currentIndex !== -1 ? currentIndex : (() => {
+            let closestIdx = 0;
+            let minDiff = Infinity;
+            for (let i = 0; i < validFrameNumbers.length; i++) {
+                const diff = Math.abs(validFrameNumbers[i] - currentFrame);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestIdx = i;
+                }
             }
+            return closestIdx;
+        })();
+
+        const half = Math.floor(maxFrames / 2);
+        let startIdx = Math.max(0, resolvedIdx - half);
+        let endIdx = Math.min(validFrameNumbers.length - 1, startIdx + maxFrames - 1);
+        if (endIdx - startIdx + 1 < maxFrames && startIdx > 0) {
+            startIdx = Math.max(0, endIdx - maxFrames + 1);
         }
-        const startIdx = Math.max(0, closestIdx - 4);
-        const endIdx = Math.min(validFrameNumbers.length - 1, Math.max(startIdx, closestIdx + 5));
         return [validFrameNumbers[startIdx], validFrameNumbers[endIdx]];
     }
+
     const clampedCurrent = Math.max(jobStartFrame, Math.min(jobStopFrame, currentFrame));
-    const start = Math.max(jobStartFrame, clampedCurrent - 4);
-    const end = Math.min(jobStopFrame, Math.max(start, clampedCurrent + 5));
+    const half = Math.floor(maxFrames / 2);
+    let start = Math.max(jobStartFrame, clampedCurrent - half);
+    let end = Math.min(jobStopFrame, start + maxFrames - 1);
+    if (end - start + 1 < maxFrames && start > jobStartFrame) {
+        start = Math.max(jobStartFrame, end - maxFrames + 1);
+    }
     return [start, end];
 }
 
 export function getTotalBatches(
     rangeStart: number,
     rangeEnd: number,
-    batchSize = 10,
+    batchSize = 16,
     validFrameNumbers?: number[],
 ): number {
+    if (batchSize <= 0) return 0;
+
     if (Array.isArray(validFrameNumbers)) {
         if (validFrameNumbers.length === 0) return 0;
         const framesInRange = validFrameNumbers.filter((f) => f >= rangeStart && f <= rangeEnd);
         if (framesInRange.length === 0) return 0;
         return Math.ceil(framesInRange.length / batchSize);
     }
+
     const totalFrames = rangeEnd - rangeStart + 1;
     if (totalFrames <= 0) return 0;
     return Math.ceil(totalFrames / batchSize);
@@ -139,21 +151,29 @@ export function getBatchFrames(
     batchIndex: number,
     rangeStart: number,
     rangeEnd: number,
-    batchSize = 10,
+    batchSize = 16,
     validFrameNumbers?: number[],
 ): number[] {
+    if (batchIndex < 0 || batchSize <= 0) return [];
+
     if (Array.isArray(validFrameNumbers)) {
         if (validFrameNumbers.length === 0) return [];
-        const framesInRange = validFrameNumbers.filter((f) => f >= rangeStart && f <= rangeEnd);
+        const framesInRange = validFrameNumbers
+            .filter((f) => f >= rangeStart && f <= rangeEnd)
+            .sort((a, b) => a - b);
         const startIdx = batchIndex * batchSize;
-        const endIdx = Math.min(framesInRange.length, startIdx + batchSize);
         if (startIdx >= framesInRange.length) return [];
+        const endIdx = Math.min(framesInRange.length, startIdx + batchSize);
         return framesInRange.slice(startIdx, endIdx);
     }
-    const start = rangeStart + batchIndex * batchSize;
-    const end = Math.min(rangeEnd, start + batchSize - 1);
-    if (start > end) return [];
 
+    if (rangeStart > rangeEnd) return [];
+    const totalFrames = rangeEnd - rangeStart + 1;
+    const startIdx = batchIndex * batchSize;
+    if (startIdx >= totalFrames) return [];
+
+    const start = rangeStart + startIdx;
+    const end = Math.min(rangeEnd, start + batchSize - 1);
     const frames: number[] = [];
     for (let f = start; f <= end; f++) {
         frames.push(f);
@@ -273,56 +293,79 @@ export interface SelectableObject {
     sourceState: any;
 }
 
+export function parseBBox(val: any): BBox | null {
+    if (!val) return null;
+
+    if (Array.isArray(val) && val.length >= 4) {
+        const [x1, y1, x2, y2] = val;
+        if (Number.isFinite(x1) && Number.isFinite(y1) && Number.isFinite(x2) && Number.isFinite(y2)) {
+            return {
+                xtl: Math.min(x1, x2),
+                ytl: Math.min(y1, y2),
+                xbr: Math.max(x1, x2),
+                ybr: Math.max(y1, y2),
+            };
+        }
+    }
+
+    if (typeof val === 'object') {
+        if (
+            Number.isFinite(val.xtl) &&
+            Number.isFinite(val.ytl) &&
+            Number.isFinite(val.xbr) &&
+            Number.isFinite(val.ybr)
+        ) {
+            return {
+                xtl: Math.min(val.xtl, val.xbr),
+                ytl: Math.min(val.ytl, val.ybr),
+                xbr: Math.max(val.xtl, val.xbr),
+                ybr: Math.max(val.ytl, val.ybr),
+            };
+        }
+        if (
+            Number.isFinite(val.x) &&
+            Number.isFinite(val.y) &&
+            Number.isFinite(val.width) &&
+            Number.isFinite(val.height)
+        ) {
+            return {
+                xtl: val.x,
+                ytl: val.y,
+                xbr: val.x + val.width,
+                ybr: val.y + val.height,
+            };
+        }
+    }
+
+    return null;
+}
+
 /**
- * Calculates the axis-aligned bounding box (AABB) for any CVAT 2D object or skeleton landmark.
- * Supported geometry types:
- *  - 'rectangle': [xtl, ytl, xbr, ybr]
- *  - 'polygon': [x1, y1, x2, y2, ...]
- *  - 'polyline': [x1, y1, x2, y2, ...]
- *  - 'points': [x1, y1, x2, y2, ...]
- *  - 'ellipse': [cx, cy, rightX, topY] -> [cx - rx, cy - ry, cx + rx, cy + ry]
- *  - 'cuboid': [x1, y1, ..., x8, y8] (2D projection vertices)
- *  - 'mask': [xtl, ytl, xbr, ybr, ...rle]
- *  - skeleton element: single [x, y] landmark
- *  - skeleton track: union of all non-outside visible elements
+ * Retrieves the object's existing bounding box from the CVAT annotation data.
+ *
+ * NOTE: For skeleton annotation tasks, the target bounding box is the object's
+ * existing defined bounding box. We do NOT derive or synthesize a replacement
+ * bounding box from skeleton keypoints or individual body landmarks.
  */
-export function getObjectBoundingBox(targetState: any, targetElementState?: any): BBox | null {
+export function getObjectBoundingBox(
+    targetState: any,
+    targetElementState?: any,
+    allFrameStates?: any[],
+): BBox | null {
     if (!targetState) return null;
 
-    // 1. If an individual landmark element of a skeleton is targeted
-    if (targetElementState && Array.isArray(targetElementState.points) && targetElementState.points.length >= 2) {
-        const [x, y] = targetElementState.points;
-        return { xtl: x, ytl: y, xbr: x, ybr: y };
+    // 1. Direct explicit bounding box properties on targetState
+    const directBox =
+        parseBBox(targetState.boundingBox) ||
+        parseBBox(targetState.bbox) ||
+        parseBBox(targetState.rect) ||
+        parseBBox(targetState.box) ||
+        parseBBox(targetState.bounds);
+    if (directBox) {
+        return directBox;
     }
 
-    // 2. Skeletons (whole track): compute bounding box across all visible elements
-    if (targetState.shapeType === 'skeleton' && Array.isArray(targetState.elements)) {
-        let minX = Infinity;
-        let minY = Infinity;
-        let maxX = -Infinity;
-        let maxY = -Infinity;
-        let hasValidElement = false;
-
-        for (const el of targetState.elements) {
-            if (!el.outside && Array.isArray(el.points) && el.points.length >= 2) {
-                const [x, y] = el.points;
-                if (Number.isFinite(x) && Number.isFinite(y)) {
-                    minX = Math.min(minX, x);
-                    minY = Math.min(minY, y);
-                    maxX = Math.max(maxX, x);
-                    maxY = Math.max(maxY, y);
-                    hasValidElement = true;
-                }
-            }
-        }
-
-        if (hasValidElement) {
-            return { xtl: minX, ytl: minY, xbr: maxX, ybr: maxY };
-        }
-        return null;
-    }
-
-    // 3. Rectangles: points = [xtl, ytl, xbr, ybr]
+    // 2. Direct points if targetState is a rectangle
     if (targetState.shapeType === 'rectangle' && Array.isArray(targetState.points) && targetState.points.length >= 4) {
         const [xtl, ytl, xbr, ybr] = targetState.points;
         return {
@@ -333,7 +376,66 @@ export function getObjectBoundingBox(targetState: any, targetElementState?: any)
         };
     }
 
-    // 4. Ellipses: points = [cx, cy, rightX, topY]
+    // 3. Direct points if targetState is a skeleton or track with 4 bounding box coordinates
+    if (
+        (targetState.shapeType === 'skeleton' || targetState.objectType === 'track') &&
+        Array.isArray(targetState.points) &&
+        targetState.points.length === 4
+    ) {
+        const [xtl, ytl, xbr, ybr] = targetState.points;
+        return {
+            xtl: Math.min(xtl, xbr),
+            ytl: Math.min(ytl, ybr),
+            xbr: Math.max(xtl, xbr),
+            ybr: Math.max(ytl, ybr),
+        };
+    }
+
+    // 4. Look up associated bounding box rectangle in frame annotations (e.g. skeleton linked with box)
+    if (Array.isArray(allFrameStates) && allFrameStates.length > 0) {
+        const targetClientID = targetState.clientID;
+        const targetGroupID = targetState.group?.id;
+        const targetTrackID = typeof targetState.id === 'number' ? targetState.id : undefined;
+
+        const associatedRect = allFrameStates.find((st: any) => {
+            if (!st || st.outside || st.shapeType !== 'rectangle') return false;
+            if (typeof targetClientID === 'number' && st.clientID === targetClientID) return true;
+            if (typeof targetClientID === 'number' && st.parentID === targetClientID) return true;
+            if (typeof targetState.parentID === 'number' && st.clientID === targetState.parentID) return true;
+            if (typeof targetGroupID === 'number' && targetGroupID > 0 && st.group?.id === targetGroupID) return true;
+            if (typeof targetTrackID === 'number' && st.id === targetTrackID) return true;
+            return false;
+        });
+
+        if (associatedRect) {
+            const rectBox =
+                parseBBox(associatedRect.boundingBox) ||
+                parseBBox(associatedRect.bbox) ||
+                parseBBox(associatedRect.points);
+            if (rectBox) {
+                return rectBox;
+            }
+        }
+    }
+
+    // 5. If targetState is a skeleton and has no defined bounding box, do NOT derive from skeleton landmarks
+    if (targetState.shapeType === 'skeleton') {
+        return null;
+    }
+
+    // 6. Other standalone geometry types (masks, ellipses, polygons, polylines, cuboids)
+    // Mask: [xtl, ytl, xbr, ybr, ...]
+    if (targetState.shapeType === 'mask' && Array.isArray(targetState.points) && targetState.points.length >= 4) {
+        const [xtl, ytl, xbr, ybr] = targetState.points;
+        return {
+            xtl: Math.min(xtl, xbr),
+            ytl: Math.min(ytl, ybr),
+            xbr: Math.max(xtl, xbr),
+            ybr: Math.max(ytl, ybr),
+        };
+    }
+
+    // Ellipse: [cx, cy, rightX, topY]
     if (targetState.shapeType === 'ellipse' && Array.isArray(targetState.points) && targetState.points.length >= 4) {
         const [cx, cy, rightX, topY] = targetState.points;
         const rx = Math.abs(rightX - cx);
@@ -346,18 +448,7 @@ export function getObjectBoundingBox(targetState: any, targetElementState?: any)
         };
     }
 
-    // 5. Masks: points = [xtl, ytl, xbr, ybr, ...]
-    if (targetState.shapeType === 'mask' && Array.isArray(targetState.points) && targetState.points.length >= 4) {
-        const [xtl, ytl, xbr, ybr] = targetState.points;
-        return {
-            xtl: Math.min(xtl, xbr),
-            ytl: Math.min(ytl, ybr),
-            xbr: Math.max(xtl, xbr),
-            ybr: Math.max(ytl, ybr),
-        };
-    }
-
-    // 6. Polygons, Polylines, Points, Cuboids: array of (x, y) coordinates
+    // Standalone Polygons, Polylines, Points, Cuboids (non-skeleton):
     if (Array.isArray(targetState.points) && targetState.points.length >= 2) {
         let minX = Infinity;
         let minY = Infinity;
@@ -384,20 +475,22 @@ export function getObjectBoundingBox(targetState: any, targetElementState?: any)
 }
 
 /**
- * Calculates a centered, padded, aspect-ratio-matched viewport for auto-zooming onto an object.
+ * Calculates a centered, aspect-ratio-matched viewport for auto-zooming onto an object's bounding box.
+ * Maximizes the bounding box displayed size according to the viewport's constraints while preserving
+ * the original source image aspect ratio without distortion and applying a small 2-5% safety margin.
  *
  * @param bbox Bounding box of the object in image pixels
  * @param imageWidth Full frame width in pixels
  * @param imageHeight Full frame height in pixels
- * @param paddingRatio Fractional padding around the object (default 0.25 = 25% padding)
- * @param minDimension Minimum width/height in pixels to avoid over-zooming on points (default 120)
+ * @param paddingRatio Safety margin around the box (default 0.03 = 3%, within 2–5% range)
+ * @param minDimension Minimum dimension baseline to prevent zero-size divisions (default 10)
  */
 export function calculateAutoZoomViewport(
     bbox: BBox,
     imageWidth: number,
     imageHeight: number,
-    paddingRatio = 0.25,
-    minDimension = 120,
+    paddingRatio = 0.03,
+    minDimension = 10,
 ): Viewport {
     if (imageWidth <= 0 || imageHeight <= 0) {
         return { x: 0, y: 0, width: Math.max(1, imageWidth), height: Math.max(1, imageHeight) };
@@ -408,27 +501,21 @@ export function calculateAutoZoomViewport(
     const centerX = (bbox.xtl + bbox.xbr) / 2;
     const centerY = (bbox.ytl + bbox.ybr) / 2;
 
-    // Apply padding with a minimum baseline
-    const paddedWidth = Math.max(
-        objWidth + Math.max(objWidth * paddingRatio * 2, minDimension * 0.4),
-        minDimension,
-    );
-    const paddedHeight = Math.max(
-        objHeight + Math.max(objHeight * paddingRatio * 2, minDimension * 0.4),
-        minDimension,
-    );
+    // Apply safety margin (2–5%, default 3%) around the bounding box
+    const paddedWidth = Math.max(objWidth * (1 + 2 * paddingRatio), minDimension);
+    const paddedHeight = Math.max(objHeight * (1 + 2 * paddingRatio), minDimension);
 
-    // Target aspect ratio (matches original frame / tile canvas)
+    // Target aspect ratio matches the original image / tile canvas
     const targetAspect = imageWidth / imageHeight;
 
     let vpWidth = paddedWidth;
     let vpHeight = paddedHeight;
 
     if (vpWidth / vpHeight < targetAspect) {
-        // Viewport is too tall; expand width to match aspect ratio
+        // Height is the limiting constraint; expand width to preserve aspect ratio
         vpWidth = vpHeight * targetAspect;
     } else {
-        // Viewport is too wide; expand height to match aspect ratio
+        // Width is the limiting constraint; expand height to preserve aspect ratio
         vpHeight = vpWidth / targetAspect;
     }
 
@@ -441,7 +528,7 @@ export function calculateAutoZoomViewport(
     let vpX = centerX - vpWidth / 2;
     let vpY = centerY - vpHeight / 2;
 
-    // Clamp within image bounds
+    // Clamp within image bounds so the entire box remains visible without extending outside frame
     if (vpX < 0) {
         vpX = 0;
     } else if (vpX + vpWidth > imageWidth) {
@@ -460,6 +547,95 @@ export function calculateAutoZoomViewport(
         width: Math.round(vpWidth),
         height: Math.round(vpHeight),
     };
+}
+
+/**
+ * Clamps a viewport within the frame boundaries while strictly preserving the image aspect ratio.
+ */
+export function clampViewport(vp: Viewport, imageWidth: number, imageHeight: number): Viewport {
+    if (imageWidth <= 0 || imageHeight <= 0) {
+        return { x: 0, y: 0, width: Math.max(1, imageWidth), height: Math.max(1, imageHeight) };
+    }
+
+    const targetAspect = imageWidth / imageHeight;
+    // Bound width between 20px and full frame width
+    let width = Math.min(Math.max(20, vp.width), imageWidth);
+    let height = width / targetAspect;
+
+    if (height > imageHeight) {
+        height = imageHeight;
+        width = height * targetAspect;
+    }
+
+    let x = Math.max(0, Math.min(vp.x, imageWidth - width));
+    let y = Math.max(0, Math.min(vp.y, imageHeight - height));
+
+    return {
+        x: Math.round(x),
+        y: Math.round(y),
+        width: Math.round(width),
+        height: Math.round(height),
+    };
+}
+
+/**
+ * Zooms a viewport by a scale factor centered at a focal point (in image coordinates).
+ * Factor < 1 zooms in (shrinks viewport), factor > 1 zooms out (expands viewport).
+ */
+export function zoomViewportAtPoint(
+    currentVp: Viewport,
+    factor: number,
+    focalX: number,
+    focalY: number,
+    imageWidth: number,
+    imageHeight: number,
+): Viewport {
+    if (imageWidth <= 0 || imageHeight <= 0 || !Number.isFinite(factor) || factor <= 0) {
+        return currentVp;
+    }
+
+    const targetAspect = imageWidth / imageHeight;
+    const newWidth = currentVp.width * factor;
+    const newHeight = newWidth / targetAspect;
+
+    // Maintain the relative position of the focal point in the viewport
+    const rx = currentVp.width > 0 ? (focalX - currentVp.x) / currentVp.width : 0.5;
+    const ry = currentVp.height > 0 ? (focalY - currentVp.y) / currentVp.height : 0.5;
+
+    const newX = focalX - rx * newWidth;
+    const newY = focalY - ry * newHeight;
+
+    return clampViewport({ x: newX, y: newY, width: newWidth, height: newHeight }, imageWidth, imageHeight);
+}
+
+/**
+ * Shifts (pans) a viewport by deltaX and deltaY in image coordinates, clamping to boundaries.
+ */
+export function panViewport(
+    currentVp: Viewport,
+    deltaX: number,
+    deltaY: number,
+    imageWidth: number,
+    imageHeight: number,
+): Viewport {
+    return clampViewport(
+        {
+            x: currentVp.x + deltaX,
+            y: currentVp.y + deltaY,
+            width: currentVp.width,
+            height: currentVp.height,
+        },
+        imageWidth,
+        imageHeight,
+    );
+}
+
+/**
+ * Computes the readable zoom percentage for a given viewport relative to the full image width.
+ */
+export function calculateZoomPercentage(vp: Viewport, imageWidth: number): number {
+    if (!vp || vp.width <= 0 || imageWidth <= 0) return 100;
+    return Math.round((imageWidth / vp.width) * 100);
 }
 
 /**

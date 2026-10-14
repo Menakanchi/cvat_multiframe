@@ -26,7 +26,7 @@ import {
 } from './multiframe-utils';
 import MultiframeTile from './multiframe-tile';
 
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 16;
 
 interface Props {
     onClose(): void;
@@ -180,23 +180,13 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
             setRangeEnd(jobStopFrame);
             setInputEnd(jobStopFrame);
         }
+        setBatchIndex(0);
     }, [initialStartFrame, initialEndFrame, hasValidFrames, jobStartFrame, jobStopFrame]);
 
-    // Initial batch index centered on current frame if verified
+    // Reset batch index to 0 whenever the selected range changes
     useEffect(() => {
-        const curStart = initialStartFrame ?? rangeStart;
-        const curEnd = initialEndFrame ?? rangeEnd;
-        if (hasValidFrames) {
-            const framesInRange = frameNumbers.filter((f) => f >= curStart && f <= curEnd);
-            const isCurrentVerified = frameNumbers.includes(currentFrame);
-            const activeIdxInRange = isCurrentVerified ? framesInRange.indexOf(currentFrame) : -1;
-            const initialBatch = activeIdxInRange !== -1 ?
-                Math.floor(activeIdxInRange / BATCH_SIZE) : 0;
-            setBatchIndex(initialBatch);
-        } else {
-            setBatchIndex(0);
-        }
-    }, [initialStartFrame, initialEndFrame, hasValidFrames, currentFrame]);
+        setBatchIndex(0);
+    }, [rangeStart, rangeEnd]);
 
     const validation = validateFrameRange(inputStart, inputEnd, jobStartFrame, jobStopFrame, frameNumbers);
     const totalBatches = getTotalBatches(rangeStart, rangeEnd, BATCH_SIZE, frameNumbers);
@@ -221,6 +211,16 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const handleNavigateToFrame = useCallback((frame: number) => {
         dispatch(changeFrameAsync(frame));
     }, [dispatch]);
+
+    const handleTileSelectObject = useCallback((targetState: any, targetElementState?: any) => {
+        if (targetElementState && targetElementState.label?.id) {
+            setSelectedObjectKey(`element_${targetState.clientID}_${targetElementState.label.id}`);
+        } else if (targetState.objectType === 'track') {
+            setSelectedObjectKey(`track_${targetState.clientID}`);
+        } else if (targetState.objectType === 'shape') {
+            setSelectedObjectKey(`shape_${targetState.clientID}`);
+        }
+    }, []);
 
     const batchStartFrame = batchFrames.length > 0 ? batchFrames[0] : (hasValidFrames ? rangeStart : '-');
     const batchEndFrame = batchFrames.length > 0 ? batchFrames[batchFrames.length - 1] : (hasValidFrames ? rangeEnd : '-');
@@ -281,7 +281,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         size='small'
                         icon={<RightOutlined />}
                         onClick={onNextBatch}
-                        disabled={batchIndex >= totalBatches - 1}
+                        disabled={totalBatches === 0 || batchIndex >= totalBatches - 1}
                         className='cvat-multiframe-next-batch-btn'
                     >
                         Next Batch
@@ -366,6 +366,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                             autoZoomEnabled={autoZoomEnabled}
                             onNavigateToFrame={handleNavigateToFrame}
                             onFrameStatesLoaded={handleFrameStatesLoaded}
+                            onSelectObject={handleTileSelectObject}
                         />
                     ))}
                 </div>
