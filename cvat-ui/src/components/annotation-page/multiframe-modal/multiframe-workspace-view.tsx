@@ -17,6 +17,7 @@ import { CloseOutlined, LeftOutlined, RightOutlined, SaveOutlined, AppstoreOutli
 import { CombinedState } from 'reducers';
 import { switchShowMultiframeModal, changeFrameAsync, saveAnnotationsAsync } from 'actions/annotation-actions';
 import { shallowEqual } from 'utils/redux';
+import { clamp } from 'utils/math';
 import CanvasLayout from 'components/annotation-page/canvas/grid-layout/canvas-layout';
 import BrushTools from 'components/annotation-page/canvas/views/canvas2d/brush-tools';
 import {
