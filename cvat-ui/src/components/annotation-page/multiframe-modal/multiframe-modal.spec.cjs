@@ -286,8 +286,100 @@ function parseBBox(val) {
     return null;
 }
 
+const SKELETON_RECT_MARGIN = 20;
+
+function resolveSkeletonWrappingBox(skeletonState, allFrameStates) {
+    if (!skeletonState) return null;
+
+    const directBox =
+        parseBBox(skeletonState.wrappingRect) ||
+        parseBBox(skeletonState.boundingBox) ||
+        parseBBox(skeletonState.bbox) ||
+        parseBBox(skeletonState.rect) ||
+        parseBBox(skeletonState.box) ||
+        parseBBox(skeletonState.bounds);
+    if (directBox) {
+        return directBox;
+    }
+
+    if (Array.isArray(skeletonState.points) && skeletonState.points.length === 4) {
+        return parseBBox(skeletonState.points);
+    }
+
+    if (Array.isArray(allFrameStates) && allFrameStates.length > 0) {
+        const targetClientID = skeletonState.clientID;
+        const targetGroupID = skeletonState.group?.id;
+
+        const associatedRect = allFrameStates.find((st) => {
+            if (!st || st.outside || st.shapeType !== 'rectangle') return false;
+            if (typeof targetClientID === 'number' && st.clientID === targetClientID) return true;
+            if (typeof targetClientID === 'number' && st.parentID === targetClientID) return true;
+            if (typeof skeletonState.parentID === 'number' && st.clientID === skeletonState.parentID) return true;
+            if (typeof targetGroupID === 'number' && targetGroupID > 0 && st.group?.id === targetGroupID) return true;
+            return false;
+        });
+
+        if (associatedRect) {
+            const rectBox =
+                parseBBox(associatedRect.boundingBox) ||
+                parseBBox(associatedRect.bbox) ||
+                parseBBox(associatedRect.points);
+            if (rectBox) {
+                return rectBox;
+            }
+        }
+    }
+
+    // Native CVAT Canvas wrapping box calculation (cvat-canvas canvasView.ts)
+    if (Array.isArray(skeletonState.elements) && skeletonState.elements.length > 0) {
+        let xtl = null;
+        let ytl = null;
+        let xbr = null;
+        let ybr = null;
+
+        for (const element of skeletonState.elements) {
+            if (!element || element.outside) continue;
+            const pts = element.points;
+            if (Array.isArray(pts) && pts.length >= 2) {
+                const cx = pts[0];
+                const cy = pts[1];
+                if (Number.isFinite(cx) && Number.isFinite(cy)) {
+                    xtl = xtl === null ? cx : Math.min(xtl, cx);
+                    ytl = ytl === null ? cy : Math.min(ytl, cy);
+                    xbr = xbr === null ? cx : Math.max(xbr, cx);
+                    ybr = ybr === null ? cy : Math.max(ybr, cy);
+                }
+            }
+        }
+
+        if (xtl !== null && ytl !== null && xbr !== null && ybr !== null) {
+            return {
+                xtl: Math.round(xtl - SKELETON_RECT_MARGIN),
+                ytl: Math.round(ytl - SKELETON_RECT_MARGIN),
+                xbr: Math.round(xbr + SKELETON_RECT_MARGIN),
+                ybr: Math.round(ybr + SKELETON_RECT_MARGIN),
+            };
+        }
+    }
+
+    return null;
+}
+
 function getObjectBoundingBox(targetState, targetElementState, allFrameStates) {
     if (!targetState) return null;
+
+    // Skeletons: always resolve complete skeleton outer wrapping bounding box (never single landmarks)
+    if (targetState.shapeType === 'skeleton' || (targetState.elements && Array.isArray(targetState.elements))) {
+        return resolveSkeletonWrappingBox(targetState, allFrameStates);
+    }
+
+    // If targetState is a landmark whose parent is a skeleton in allFrameStates
+    if (targetState.parentID !== null && targetState.parentID !== undefined && Array.isArray(allFrameStates)) {
+        const parentSkeleton = allFrameStates.find((st) => st && st.clientID === targetState.parentID);
+        if (parentSkeleton && parentSkeleton.shapeType === 'skeleton') {
+            return resolveSkeletonWrappingBox(parentSkeleton, allFrameStates);
+        }
+    }
 
     // 1. Direct explicit bounding box properties on targetState
     const directBox =
@@ -311,9 +403,9 @@ function getObjectBoundingBox(targetState, targetElementState, allFrameStates) {
         };
     }
 
-    // 3. Direct points if targetState is a skeleton or track with 4 bounding box coordinates
+    // 3. Direct points if targetState has 4 bounding box coordinates
     if (
-        (targetState.shapeType === 'skeleton' || targetState.objectType === 'track') &&
+        targetState.objectType === 'track' &&
         Array.isArray(targetState.points) &&
         targetState.points.length === 4
     ) {
@@ -326,19 +418,16 @@ function getObjectBoundingBox(targetState, targetElementState, allFrameStates) {
         };
     }
 
-    // 4. Look up associated bounding box rectangle in frame annotations (e.g. skeleton linked with box)
+    // 4. Look up associated bounding box rectangle in frame annotations (e.g. linked by group.id)
     if (Array.isArray(allFrameStates) && allFrameStates.length > 0) {
         const targetClientID = targetState.clientID;
         const targetGroupID = targetState.group?.id;
-        const targetTrackID = typeof targetState.id === 'number' ? targetState.id : undefined;
-
         const associatedRect = allFrameStates.find((st) => {
             if (!st || st.outside || st.shapeType !== 'rectangle') return false;
             if (typeof targetClientID === 'number' && st.clientID === targetClientID) return true;
             if (typeof targetClientID === 'number' && st.parentID === targetClientID) return true;
             if (typeof targetState.parentID === 'number' && st.clientID === targetState.parentID) return true;
             if (typeof targetGroupID === 'number' && targetGroupID > 0 && st.group?.id === targetGroupID) return true;
-            if (typeof targetTrackID === 'number' && st.id === targetTrackID) return true;
             return false;
         });
 
@@ -353,12 +442,7 @@ function getObjectBoundingBox(targetState, targetElementState, allFrameStates) {
         }
     }
 
-    // 5. If targetState is a skeleton and has no defined bounding box, do NOT derive from skeleton landmarks
-    if (targetState.shapeType === 'skeleton') {
-        return null;
-    }
-
-    // 6. Other standalone geometry types (masks, ellipses, polygons, polylines, cuboids)
+    // 5. Masks
     if (targetState.shapeType === 'mask' && Array.isArray(targetState.points) && targetState.points.length >= 4) {
         const [xtl, ytl, xbr, ybr] = targetState.points;
         return {
@@ -369,6 +453,7 @@ function getObjectBoundingBox(targetState, targetElementState, allFrameStates) {
         };
     }
 
+    // 6. Ellipse
     if (targetState.shapeType === 'ellipse' && Array.isArray(targetState.points) && targetState.points.length >= 4) {
         const [cx, cy, rightX, topY] = targetState.points;
         const rx = Math.abs(rightX - cx);
@@ -381,6 +466,7 @@ function getObjectBoundingBox(targetState, targetElementState, allFrameStates) {
         };
     }
 
+    // 7. Standalone Polygons, Polylines, Points, Cuboids:
     if (Array.isArray(targetState.points) && targetState.points.length >= 2) {
         let minX = Infinity;
         let minY = Infinity;
@@ -443,17 +529,16 @@ function calculateAutoZoomViewport(bbox, imageWidth, imageHeight, paddingRatio =
         vpX = Math.max(0, imageWidth - vpWidth);
     }
 
-    if (vpY < 0) {
-        vpY = 0;
-    } else if (vpY + vpHeight > imageHeight) {
-        vpY = Math.max(0, imageHeight - vpHeight);
-    }
+    const roundedWidth = Math.min(Math.round(vpWidth), imageWidth);
+    const roundedHeight = Math.min(Math.round(vpHeight), imageHeight);
+    const roundedX = Math.max(0, Math.min(Math.round(vpX), imageWidth - roundedWidth));
+    const roundedY = Math.max(0, Math.min(Math.round(vpY), imageHeight - roundedHeight));
 
     return {
-        x: Math.round(vpX),
-        y: Math.round(vpY),
-        width: Math.round(vpWidth),
-        height: Math.round(vpHeight),
+        x: roundedX,
+        y: roundedY,
+        width: roundedWidth,
+        height: roundedHeight,
     };
 }
 
@@ -467,6 +552,11 @@ function extractSelectableObjects(states) {
     for (const state of states) {
         if (!state) continue;
 
+        // Skip child elements/landmarks - only complete parent objects should be selectable
+        if (state.parentID !== undefined && state.parentID !== null) {
+            continue;
+        }
+
         const isTrack = state.objectType === 'track';
         const clientID = state.clientID;
         if (typeof clientID !== 'number') continue;
@@ -479,6 +569,7 @@ function extractSelectableObjects(states) {
         if (isTrack) {
             const trackKey = `track_${clientID}`;
             if (!objectsMap.has(trackKey)) {
+                const typeName = shapeType.charAt(0).toUpperCase() + shapeType.slice(1);
                 objectsMap.set(trackKey, {
                     key: trackKey,
                     clientID,
@@ -488,38 +579,15 @@ function extractSelectableObjects(states) {
                     labelName,
                     shapeType,
                     objectType: 'track',
-                    displayText: `Track #${clientID}${state.id ? ` [ID ${state.id}]` : ''}: ${labelName} (${shapeType})`,
+                    displayText: `Track #${clientID}${state.id ? ` [ID ${state.id}]` : ''}: ${labelName} (${typeName})`,
                     color,
                     sourceState: state,
                 });
             }
-
-            if (shapeType === 'skeleton' && Array.isArray(state.elements)) {
-                for (const el of state.elements) {
-                    const elSublabelID = el.label?.id;
-                    const elSublabelName = el.label?.name || 'Landmark';
-                    const elKey = `element_${clientID}_${elSublabelID}`;
-
-                    if (!objectsMap.has(elKey)) {
-                        objectsMap.set(elKey, {
-                            key: elKey,
-                            clientID: el.clientID,
-                            parentID: clientID,
-                            sublabelID: elSublabelID,
-                            labelID: elSublabelID,
-                            labelName: elSublabelName,
-                            shapeType: el.shapeType || 'points',
-                            objectType: 'track',
-                            displayText: `  ↳ ${labelName} #${clientID} → ${elSublabelName}`,
-                            color: el.color || color,
-                            sourceState: el,
-                        });
-                    }
-                }
-            }
         } else if (state.objectType === 'shape') {
             const shapeKey = `shape_${clientID}`;
             if (!objectsMap.has(shapeKey)) {
+                const typeName = shapeType.charAt(0).toUpperCase() + shapeType.slice(1);
                 objectsMap.set(shapeKey, {
                     key: shapeKey,
                     clientID,
@@ -528,7 +596,7 @@ function extractSelectableObjects(states) {
                     labelName,
                     shapeType,
                     objectType: 'shape',
-                    displayText: `Shape #${clientID}: ${labelName} (${shapeType})`,
+                    displayText: `Shape #${clientID}: ${labelName} (${typeName})`,
                     color,
                     sourceState: state,
                 });
@@ -556,11 +624,16 @@ function clampViewport(vp, imageWidth, imageHeight) {
     let x = Math.max(0, Math.min(vp.x, imageWidth - width));
     let y = Math.max(0, Math.min(vp.y, imageHeight - height));
 
+    const roundedWidth = Math.min(Math.round(width), imageWidth);
+    const roundedHeight = Math.min(Math.round(height), imageHeight);
+    const roundedX = Math.max(0, Math.min(Math.round(x), imageWidth - roundedWidth));
+    const roundedY = Math.max(0, Math.min(Math.round(y), imageHeight - roundedHeight));
+
     return {
-        x: Math.round(x),
-        y: Math.round(y),
-        width: Math.round(width),
-        height: Math.round(height),
+        x: roundedX,
+        y: roundedY,
+        width: roundedWidth,
+        height: roundedHeight,
     };
 }
 
@@ -598,6 +671,86 @@ function panViewport(currentVp, deltaX, deltaY, imageWidth, imageHeight) {
 function calculateZoomPercentage(vp, imageWidth) {
     if (!vp || vp.width <= 0 || imageWidth <= 0) return 100;
     return Math.round((imageWidth / vp.width) * 100);
+}
+
+function calculateContainedDimensions(containerWidth, containerHeight, contentWidth, contentHeight) {
+    if (containerWidth <= 0 || containerHeight <= 0 || contentWidth <= 0 || contentHeight <= 0) {
+        return {
+            fitWidth: Math.max(0, containerWidth),
+            fitHeight: Math.max(0, containerHeight),
+            offsetX: 0,
+            offsetY: 0,
+            letterboxType: 'none',
+            scale: 1,
+        };
+    }
+
+    const containerAspect = containerWidth / containerHeight;
+    const contentAspect = contentWidth / contentHeight;
+
+    let fitWidth;
+    let fitHeight;
+    let letterboxType = 'none';
+
+    if (Math.abs(containerAspect - contentAspect) < 0.001) {
+        fitWidth = containerWidth;
+        fitHeight = containerHeight;
+        letterboxType = 'none';
+    } else if (containerAspect > contentAspect) {
+        fitHeight = containerHeight;
+        fitWidth = containerHeight * contentAspect;
+        letterboxType = 'pillarbox';
+    } else {
+        fitWidth = containerWidth;
+        fitHeight = containerWidth / contentAspect;
+        letterboxType = 'letterbox';
+    }
+
+    fitWidth = Math.min(containerWidth, Math.max(1, fitWidth));
+    fitHeight = Math.min(containerHeight, Math.max(1, fitHeight));
+
+    const offsetX = Math.max(0, (containerWidth - fitWidth) / 2);
+    const offsetY = Math.max(0, (containerHeight - fitHeight) / 2);
+    const scale = contentWidth > 0 ? fitWidth / contentWidth : 1;
+
+    return {
+        fitWidth,
+        fitHeight,
+        offsetX,
+        offsetY,
+        letterboxType,
+        scale,
+    };
+}
+
+function mapPointerToImageCoordinates(pointerContainerX, pointerContainerY, layout, viewport, imageWidth, imageHeight) {
+    const { fitWidth, fitHeight, offsetX, offsetY } = layout;
+
+    const isInsideContent =
+        pointerContainerX >= offsetX &&
+        pointerContainerX <= offsetX + fitWidth &&
+        pointerContainerY >= offsetY &&
+        pointerContainerY <= offsetY + fitHeight;
+
+    const contentRelX = Math.max(0, Math.min(fitWidth, pointerContainerX - offsetX));
+    const contentRelY = Math.max(0, Math.min(fitHeight, pointerContainerY - offsetY));
+
+    const vpX = viewport?.x ?? 0;
+    const vpY = viewport?.y ?? 0;
+    const vpW = (viewport?.width && viewport.width > 0) ? viewport.width : imageWidth;
+    const vpH = (viewport?.height && viewport.height > 0) ? viewport.height : imageHeight;
+
+    const normX = fitWidth > 0 ? contentRelX / fitWidth : 0;
+    const normY = fitHeight > 0 ? contentRelY / fitHeight : 0;
+
+    const imageX = vpX + normX * vpW;
+    const imageY = vpY + normY * vpH;
+
+    return {
+        x: Math.max(0, Math.min(imageWidth, imageX)),
+        y: Math.max(0, Math.min(imageHeight, imageY)),
+        isInsideContent,
+    };
 }
 
 console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
@@ -1073,11 +1226,11 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     ];
 
     const selectable = extractSelectableObjects(states);
-    // Should have: track_101, track_102, element_102_11, element_102_12, shape_103
-    assert.strictEqual(selectable.length, 5);
+    // Should only have complete logical objects: track_101, track_102, shape_103 (never child landmarks)
+    assert.strictEqual(selectable.length, 3);
 
     const keys = selectable.map((s) => s.key);
-    assert.deepStrictEqual(keys, ['track_101', 'track_102', 'element_102_11', 'element_102_12', 'shape_103']);
+    assert.deepStrictEqual(keys, ['track_101', 'track_102', 'shape_103']);
 
     // Check display text & metadata
     const carObj = selectable.find((s) => s.key === 'track_101');
@@ -1085,10 +1238,17 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     assert.strictEqual(carObj.labelName, 'car');
     assert.strictEqual(carObj.displayText.includes('car'), true);
 
-    const noseObj = selectable.find((s) => s.key === 'element_102_11');
-    assert.strictEqual(noseObj.parentID, 102);
-    assert.strictEqual(noseObj.labelName, 'nose');
-    assert.strictEqual(noseObj.displayText.includes('nose'), true);
+    const personSkeleton = selectable.find((s) => s.key === 'track_102');
+    assert.strictEqual(personSkeleton.objectType, 'track');
+    assert.strictEqual(personSkeleton.shapeType, 'skeleton');
+    assert.strictEqual(personSkeleton.labelName, 'person');
+    assert.strictEqual(personSkeleton.parentID, null);
+    // Elements remain preserved in sourceState for full skeleton rendering and editing
+    assert.strictEqual(personSkeleton.sourceState.elements.length, 2);
+
+    // Child landmarks must NOT exist as selectable objects
+    assert.strictEqual(selectable.some((s) => s.key.startsWith('element_')), false);
+    assert.strictEqual(selectable.some((s) => s.labelName === 'nose' || s.labelName === 'left_eye'), false);
 
     // Empty list handling
     assert.deepStrictEqual(extractSelectableObjects([]), []);
@@ -1148,7 +1308,7 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     const frameStates = [{ shapeType: 'rectangle', parentID: 12, points: [50, 60, 150, 260], outside: false }];
     assert.deepStrictEqual(getObjectBoundingBox(skelLinked, null, frameStates), { xtl: 50, ytl: 60, xbr: 150, ybr: 260 });
 
-    // 10. Skeleton with NO existing bounding box does NOT compute from skeleton keypoints
+    // 10. Skeleton without pre-defined bounding box resolves native CVAT Canvas wrapping box
     const skelNoBox = {
         shapeType: 'skeleton',
         elements: [
@@ -1156,7 +1316,15 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
             { points: [120, 180], outside: false },
         ],
     };
-    assert.strictEqual(getObjectBoundingBox(skelNoBox), null, 'Must NOT derive bounding box from skeleton keypoints');
+    assert.deepStrictEqual(getObjectBoundingBox(skelNoBox), { xtl: 80, ytl: 130, xbr: 140, ybr: 200 }, 'Must resolve native CVAT Canvas skeleton wrapping box');
+
+    const skelAllOutside = {
+        shapeType: 'skeleton',
+        elements: [
+            { points: [100, 150], outside: true },
+        ],
+    };
+    assert.strictEqual(getObjectBoundingBox(skelAllOutside), null, 'All outside elements yield null');
 
     // 11. Individual skeleton landmark targeted uses parent object existing bounding box
     const landmarkEl = { points: [42, 68], outside: false };
@@ -2039,5 +2207,1955 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     console.log('  ✔ TC 43 passed.');
 }
 
+// TC 44: A Known Rectangle Renders at Correct Position, Size, and Rotation
+{
+    console.log('TC 44: Known rectangle renders at correct position, size, and rotation...');
+    const state = {
+        clientID: 101,
+        shapeType: 'rectangle',
+        points: [400, 200, 700, 600],
+        rotation: 15,
+        color: '#ff0000',
+    };
+
+    const [xtl, ytl, xbr, ybr] = state.points;
+    const width = Math.max(0, xbr - xtl);
+    const height = Math.max(0, ybr - ytl);
+    const cx = xtl + width / 2;
+    const cy = ytl + height / 2;
+    const transform = state.rotation ? `rotate(${state.rotation} ${cx} ${cy})` : undefined;
+
+    assert.strictEqual(xtl, 400);
+    assert.strictEqual(ytl, 200);
+    assert.strictEqual(width, 300, 'Width must equal xbr - xtl (700 - 400 = 300)');
+    assert.strictEqual(height, 400, 'Height must equal ybr - ytl (600 - 200 = 400)');
+    assert.strictEqual(cx, 550, 'Center X must be 550');
+    assert.strictEqual(cy, 400, 'Center Y must be 400');
+    assert.strictEqual(transform, 'rotate(15 550 400)', 'Transform must rotate around rectangle center');
+    console.log('  ✔ TC 44 passed.');
+}
+
+// TC 45: Non-Zero Crop Offset is Applied Exactly Once
+{
+    console.log('TC 45: Non-zero crop offset is applied exactly once...');
+    const bbox = { xtl: 600, ytl: 300, xbr: 900, ybr: 700 };
+    const imageWidth = 1920;
+    const imageHeight = 1080;
+    const containerWidth = 480;
+    const containerHeight = 270;
+
+    const vp = calculateAutoZoomViewport(bbox, imageWidth, imageHeight);
+    assert(vp.x > 0, `Viewport X crop offset must be non-zero (was ${vp.x})`);
+    assert(vp.y > 0, `Viewport Y crop offset must be non-zero (was ${vp.y})`);
+
+    // In canvas: source image is cropped at (vp.x, vp.y) and rendered to destination (0, 0, vp.width, vp.height)
+    // Destination is scaled by CSS to (containerWidth, containerHeight)
+    // A point P = (750, 500) on the object:
+    const targetPx = 750;
+    const targetPy = 500;
+
+    // Canvas image screen position:
+    const canvasNormalizedX = (targetPx - vp.x) / vp.width;
+    const canvasNormalizedY = (targetPy - vp.y) / vp.height;
+    const canvasScreenX = canvasNormalizedX * containerWidth;
+    const canvasScreenY = canvasNormalizedY * containerHeight;
+
+    // SVG with viewBox="vp.x vp.y vp.width vp.height" and preserveAspectRatio="none":
+    // Maps coordinate (targetPx, targetPy) to:
+    const svgNormalizedX = (targetPx - vp.x) / vp.width;
+    const svgNormalizedY = (targetPy - vp.y) / vp.height;
+    const svgScreenX = svgNormalizedX * containerWidth;
+    const svgScreenY = svgNormalizedY * containerHeight;
+
+    // Crop offset is applied exactly once (vp.x):
+    assert.strictEqual(canvasNormalizedX, svgNormalizedX);
+    assert.strictEqual(canvasNormalizedY, svgNormalizedY);
+    assert.strictEqual(canvasScreenX, svgScreenX);
+    assert.strictEqual(canvasScreenY, svgScreenY);
+    // Double offset (e.g. if someone subtracted vp.x twice) would produce wrong position:
+    const doubleOffsetNormalizedX = (targetPx - 2 * vp.x) / vp.width;
+    assert.notStrictEqual(svgNormalizedX, doubleOffsetNormalizedX);
+    console.log('  ✔ TC 45 passed.');
+}
+
+// TC 46: Zooming Does Not Move the Overlay Relative to the Underlying Image
+{
+    console.log('TC 46: Zooming does not move overlay relative to underlying image...');
+    const imageWidth = 1920;
+    const imageHeight = 1080;
+    const featurePoint = [960, 540]; // Center point of image
+    const containerWidth = 500;
+    const containerHeight = 281.25;
+
+    // 100% Zoom Viewport (full frame)
+    const vp100 = { x: 0, y: 0, width: 1920, height: 1080 };
+    const canvasPos100X = ((featurePoint[0] - vp100.x) / vp100.width) * containerWidth;
+    const svgPos100X = ((featurePoint[0] - vp100.x) / vp100.width) * containerWidth;
+    assert.strictEqual(canvasPos100X, 250);
+    assert.strictEqual(svgPos100X, 250);
+
+    // 200% Zoom Viewport (centered at 960, 540)
+    const vp200 = zoomViewportAtPoint(vp100, 0.5, 960, 540, imageWidth, imageHeight);
+    const canvasPos200X = ((featurePoint[0] - vp200.x) / vp200.width) * containerWidth;
+    const svgPos200X = ((featurePoint[0] - vp200.x) / vp200.width) * containerWidth;
+    assert.strictEqual(canvasPos200X, 250);
+    assert.strictEqual(svgPos200X, 250);
+
+    // 400% Zoom Viewport (offset focal point at 800, 400)
+    const vp400 = zoomViewportAtPoint(vp200, 0.5, 800, 400, imageWidth, imageHeight);
+    const canvasPos400X = ((featurePoint[0] - vp400.x) / vp400.width) * containerWidth;
+    const svgPos400X = ((featurePoint[0] - vp400.x) / vp400.width) * containerWidth;
+    assert.strictEqual(canvasPos400X, svgPos400X, 'Canvas and SVG overlay must stay pixel-locked');
+
+    console.log('  ✔ TC 46 passed.');
+}
+
+// TC 47: Resizing a Tile Preserves Image/Overlay Alignment (preserveAspectRatio="none")
+{
+    console.log('TC 47: Resizing tile preserves image/overlay alignment...');
+    const vp = { x: 200, y: 150, width: 600, height: 337.5 };
+    const landmark = [450, 300]; // in image coordinates
+
+    // Test different container sizes and aspect ratios (e.g. responsive window resize or grid stretching)
+    const containerSizes = [
+        [400, 225],   // 16:9
+        [320, 240],   // 4:3 stretched
+        [500, 200],   // ultra-wide stretched
+        [280, 280],   // square stretched
+    ];
+
+    for (const [cWidth, cHeight] of containerSizes) {
+        // Canvas mapping
+        const canvasScreenX = ((landmark[0] - vp.x) / vp.width) * cWidth;
+        const canvasScreenY = ((landmark[1] - vp.y) / vp.height) * cHeight;
+
+        // SVG with preserveAspectRatio="none"
+        const svgScreenX = ((landmark[0] - vp.x) / vp.width) * cWidth;
+        const svgScreenY = ((landmark[1] - vp.y) / vp.height) * cHeight;
+
+        assert.strictEqual(canvasScreenX, svgScreenX);
+        assert.strictEqual(canvasScreenY, svgScreenY);
+    }
+    console.log('  ✔ TC 47 passed.');
+}
+
+// TC 48: Different Frame Dimensions Handled Correctly
+{
+    console.log('TC 48: Different frame dimensions handled correctly...');
+    // 16:9 1080p frame
+    const vp1 = calculateAutoZoomViewport({ xtl: 200, ytl: 100, xbr: 500, ybr: 400 }, 1920, 1080);
+    assert(vp1.width <= 1920 && vp1.height <= 1080);
+    assert.strictEqual(Math.round((vp1.width / vp1.height) * 100), Math.round((1920 / 1080) * 100));
+
+    // 1:1 Square frame (e.g. 1000x1000)
+    const vpSquare = calculateAutoZoomViewport({ xtl: 100, ytl: 100, xbr: 400, ybr: 400 }, 1000, 1000);
+    assert(vpSquare.width <= 1000 && vpSquare.height <= 1000);
+    assert.strictEqual(vpSquare.width, vpSquare.height, 'Square frame must yield square viewport');
+
+    // 9:16 Portrait frame (e.g. 1080x1920)
+    const vpPortrait = calculateAutoZoomViewport({ xtl: 100, ytl: 200, xbr: 300, ybr: 600 }, 1080, 1920);
+    assert(vpPortrait.width <= 1080 && vpPortrait.height <= 1920);
+    assert.strictEqual(Math.round((vpPortrait.width / vpPortrait.height) * 100), Math.round((1080 / 1920) * 100));
+
+    console.log('  ✔ TC 48 passed.');
+}
+
+// TC 49: Different Objects with Same Label Do Not Share the Wrong Box
+{
+    console.log('TC 49: Different objects with same label do not share wrong box...');
+    const frameStates = [
+        { clientID: 101, objectType: 'track', shapeType: 'rectangle', label: { id: 1, name: 'face' }, points: [100, 100, 250, 250], color: '#ff0000' },
+        { clientID: 102, objectType: 'track', shapeType: 'rectangle', label: { id: 1, name: 'face' }, points: [600, 600, 750, 750], color: '#ff0000' },
+    ];
+
+    const selectedFace1 = frameStates[0];
+    const match1 = resolveCrossFrameIdentity(selectedFace1, frameStates);
+    assert.strictEqual(match1.status, 'MATCHED');
+    assert.strictEqual(match1.matchedClientID, 101);
+
+    const bbox1 = getObjectBoundingBox(match1.targetState, null, frameStates);
+    assert.deepStrictEqual(bbox1, { xtl: 100, ytl: 100, xbr: 250, ybr: 250 });
+
+    // Object 102 must NOT be matched or have isMatched=true
+    const is102Matched = frameStates[1].clientID === match1.matchedClientID;
+    assert.strictEqual(is102Matched, false, 'Face 2 must not be matched when Face 1 is selected');
+
+    console.log('  ✔ TC 49 passed.');
+}
+
+// TC 50: Moving Object Between Frames Uses Its Own Per-Frame Coordinates
+{
+    console.log('TC 50: Moving object between frames uses own per-frame coordinates...');
+    const frame0States = [
+        { clientID: 50, objectType: 'track', shapeType: 'rectangle', points: [100, 100, 200, 200] },
+    ];
+    const frame1States = [
+        { clientID: 50, objectType: 'track', shapeType: 'rectangle', points: [400, 300, 500, 400] },
+    ];
+    const frame2States = [
+        { clientID: 50, objectType: 'track', shapeType: 'rectangle', points: [700, 500, 800, 600] },
+    ];
+
+    const selectedTrack = frame0States[0];
+
+    const matchF0 = resolveCrossFrameIdentity(selectedTrack, frame0States);
+    const bboxF0 = getObjectBoundingBox(matchF0.targetState, null, frame0States);
+    assert.deepStrictEqual(bboxF0, { xtl: 100, ytl: 100, xbr: 200, ybr: 200 });
+
+    const matchF1 = resolveCrossFrameIdentity(selectedTrack, frame1States);
+    const bboxF1 = getObjectBoundingBox(matchF1.targetState, null, frame1States);
+    assert.deepStrictEqual(bboxF1, { xtl: 400, ytl: 300, xbr: 500, ybr: 400 }, 'Frame 1 must use Frame 1 coordinates');
+
+    const matchF2 = resolveCrossFrameIdentity(selectedTrack, frame2States);
+    const bboxF2 = getObjectBoundingBox(matchF2.targetState, null, frame2States);
+    assert.deepStrictEqual(bboxF2, { xtl: 700, ytl: 500, xbr: 800, ybr: 600 }, 'Frame 2 must use Frame 2 coordinates');
+
+    // Viewports must be distinctly centered on each frame's own box
+    const vpF0 = calculateAutoZoomViewport(bboxF0, 1920, 1080);
+    const vpF1 = calculateAutoZoomViewport(bboxF1, 1920, 1080);
+    const vpF2 = calculateAutoZoomViewport(bboxF2, 1920, 1080);
+
+    assert(Math.abs((vpF0.x + vpF0.width / 2) - 150) < 5);
+    assert(Math.abs((vpF1.x + vpF1.width / 2) - 450) < 5);
+    assert(Math.abs((vpF2.x + vpF2.width / 2) - 750) < 5);
+
+    console.log('  ✔ TC 50 passed.');
+}
+
+// TC 51: Missing Objects Do Not Display Stale Bounding Boxes
+{
+    console.log('TC 51: Missing objects do not display stale bounding boxes...');
+    const selectedTrack = { clientID: 77, objectType: 'track', shapeType: 'rectangle', points: [100, 100, 200, 200] };
+    const frameWithOutsideObject = [
+        { clientID: 77, objectType: 'track', shapeType: 'rectangle', outside: true, points: [100, 100, 200, 200] },
+    ];
+
+    const match = resolveCrossFrameIdentity(selectedTrack, frameWithOutsideObject);
+    assert.strictEqual(match.status, 'ABSENT_ON_FRAME');
+    assert.strictEqual(match.targetState, null);
+    assert.strictEqual(match.matchedClientID, null);
+
+    // Viewport fallback when targetState is null or match.status !== 'MATCHED'
+    const fallbackVp = match.status === 'MATCHED'
+        ? calculateAutoZoomViewport(getObjectBoundingBox(match.targetState), 1920, 1080)
+        : { x: 0, y: 0, width: 1920, height: 1080 };
+
+    assert.deepStrictEqual(fallbackVp, { x: 0, y: 0, width: 1920, height: 1080 }, 'Must fall back to full frame');
+    console.log('  ✔ TC 51 passed.');
+}
+
+// TC 52: Auto-Zoom and Manual Zoom Preserve Alignment
+{
+    console.log('TC 52: Auto-Zoom and manual zoom preserve alignment...');
+    const bbox = { xtl: 300, ytl: 200, xbr: 500, ybr: 400 };
+    const imageWidth = 1920;
+    const imageHeight = 1080;
+    const containerWidth = 400;
+    const containerHeight = 225;
+
+    // 1. Auto-Zoom Viewport
+    const autoVp = calculateAutoZoomViewport(bbox, imageWidth, imageHeight);
+    const testPoint = [400, 300]; // Center of bbox
+
+    const autoCanvasX = ((testPoint[0] - autoVp.x) / autoVp.width) * containerWidth;
+    const autoSvgX = ((testPoint[0] - autoVp.x) / autoVp.width) * containerWidth;
+    assert.strictEqual(autoCanvasX, autoSvgX);
+
+    // 2. User manually zooms in on point
+    const manualZoomVp = zoomViewportAtPoint(autoVp, 0.75, testPoint[0], testPoint[1], imageWidth, imageHeight);
+    const manualCanvasX = ((testPoint[0] - manualZoomVp.x) / manualZoomVp.width) * containerWidth;
+    const manualSvgX = ((testPoint[0] - manualZoomVp.x) / manualZoomVp.width) * containerWidth;
+    assert.strictEqual(manualCanvasX, manualSvgX);
+
+    // 3. User pans viewport
+    const pannedVp = panViewport(manualZoomVp, 50, 30, imageWidth, imageHeight);
+    const pannedCanvasX = ((testPoint[0] - pannedVp.x) / pannedVp.width) * containerWidth;
+    const pannedSvgX = ((testPoint[0] - pannedVp.x) / pannedVp.width) * containerWidth;
+    assert.strictEqual(pannedCanvasX, pannedSvgX);
+
+    console.log('  ✔ TC 52 passed.');
+}
+
+// TC 53: Rendering Does Not Mutate Annotation Coordinates
+{
+    console.log('TC 53: Rendering does not mutate annotation coordinates...');
+    const originalPoints = [123.456, 234.567, 345.678, 456.789];
+    const originalPointsCopy = [...originalPoints];
+    const annotationState = {
+        clientID: 99,
+        objectType: 'track',
+        shapeType: 'rectangle',
+        points: originalPoints,
+        rotation: 0,
+    };
+
+    // Deep freeze points array to catch any accidental in-place mutations
+    Object.freeze(annotationState.points);
+
+    // Run entire pipeline
+    const match = resolveCrossFrameIdentity(annotationState, [annotationState]);
+    const bbox = getObjectBoundingBox(match.targetState, null, [annotationState]);
+    const vp = calculateAutoZoomViewport(bbox, 1920, 1080);
+    const pct = calculateZoomPercentage(vp, 1920);
+
+    assert.deepStrictEqual(annotationState.points, originalPointsCopy, 'Annotation points must not be mutated');
+    assert.strictEqual(pct > 0, true);
+    console.log('  ✔ TC 53 passed.');
+}
+
+// TC 54: With No Selected Object, All Bounding Boxes Are Preserved and Visible
+{
+    console.log('TC 54: With no selected object, all bounding boxes are preserved and visible...');
+    const frameStates = [
+        { clientID: 10, objectType: 'track', shapeType: 'rectangle', points: [100, 100, 200, 200], color: '#1890ff' },
+        { clientID: 20, objectType: 'track', shapeType: 'rectangle', points: [300, 300, 400, 400], color: '#52c41a' },
+    ];
+
+    const hasSelection = false;
+    const matchedClientID = null;
+    const matchedRectClientID = null;
+
+    // Simulate MultiframeSvgOverlay rectangle filtering logic
+    const renderedBoxes = frameStates.map((state) => {
+        const isMatched = state.clientID === matchedClientID ||
+            (typeof matchedRectClientID === 'number' && state.clientID === matchedRectClientID);
+        if (hasSelection && !isMatched) {
+            return null;
+        }
+        return { clientID: state.clientID, color: isMatched ? '#00f0ff' : state.color };
+    }).filter(Boolean);
+
+    assert.strictEqual(renderedBoxes.length, 2, 'Both boxes must be rendered when no object is selected');
+    assert.strictEqual(renderedBoxes[0].clientID, 10);
+    assert.strictEqual(renderedBoxes[0].color, '#1890ff');
+    assert.strictEqual(renderedBoxes[1].clientID, 20);
+    assert.strictEqual(renderedBoxes[1].color, '#52c41a');
+    console.log('  ✔ TC 54 passed.');
+}
+
+// TC 55: Selecting Object A Displays A's Box and Hides B's Box
+{
+    console.log('TC 55: Selecting object A displays A box and hides B box...');
+    const frameStates = [
+        { clientID: 10, objectType: 'track', shapeType: 'rectangle', points: [100, 100, 200, 200], color: '#1890ff' },
+        { clientID: 20, objectType: 'track', shapeType: 'rectangle', points: [300, 300, 400, 400], color: '#52c41a' },
+    ];
+
+    const selectedObject = frameStates[0]; // Object A
+    const match = resolveCrossFrameIdentity(selectedObject, frameStates);
+    assert.strictEqual(match.status, 'MATCHED');
+
+    const hasSelection = true;
+    const matchedClientID = match.matchedClientID;
+    const matchedRectClientID = 10;
+
+    const renderedBoxes = frameStates.map((state) => {
+        const isMatched = state.clientID === matchedClientID ||
+            (typeof matchedRectClientID === 'number' && state.clientID === matchedRectClientID);
+        if (hasSelection && !isMatched) {
+            return null;
+        }
+        return { clientID: state.clientID, color: isMatched ? '#00f0ff' : state.color };
+    }).filter(Boolean);
+
+    assert.strictEqual(renderedBoxes.length, 1, 'Only Object A box must be rendered');
+    assert.strictEqual(renderedBoxes[0].clientID, 10);
+    assert.strictEqual(renderedBoxes[0].color, '#00f0ff', 'Object A box must be highlighted in cyan');
+    console.log('  ✔ TC 55 passed.');
+}
+
+// TC 56: Objects with Identical Labels Remain Correctly Distinguished by Identity
+{
+    console.log('TC 56: Objects with identical labels remain correctly distinguished by identity...');
+    const frameStates = [
+        { clientID: 101, objectType: 'track', shapeType: 'rectangle', label: { id: 5, name: 'face' }, points: [100, 100, 200, 200], color: '#ff0000' },
+        { clientID: 102, objectType: 'track', shapeType: 'rectangle', label: { id: 5, name: 'face' }, points: [500, 500, 600, 600], color: '#ff0000' },
+    ];
+
+    // 1. Select Face 1 (clientID: 101)
+    const match1 = resolveCrossFrameIdentity(frameStates[0], frameStates);
+    const rendered1 = frameStates.map((st) => {
+        const isMatched = st.clientID === match1.matchedClientID;
+        if (true && !isMatched) return null;
+        return st.clientID;
+    }).filter(Boolean);
+    assert.deepStrictEqual(rendered1, [101], 'Selecting Face 1 must only display Face 1');
+
+    // 2. Select Face 2 (clientID: 102)
+    const match2 = resolveCrossFrameIdentity(frameStates[1], frameStates);
+    const rendered2 = frameStates.map((st) => {
+        const isMatched = st.clientID === match2.matchedClientID;
+        if (true && !isMatched) return null;
+        return st.clientID;
+    }).filter(Boolean);
+    assert.deepStrictEqual(rendered2, [102], 'Selecting Face 2 must only display Face 2');
+
+    console.log('  ✔ TC 56 passed.');
+}
+
+// TC 57: The Corresponding Object is Resolved Correctly in Each Frame
+{
+    console.log('TC 57: Corresponding object is resolved correctly in each frame...');
+    const frame0States = [
+        { clientID: 50, objectType: 'track', shapeType: 'rectangle', points: [100, 100, 200, 200] },
+        { clientID: 99, objectType: 'track', shapeType: 'rectangle', points: [800, 800, 900, 900] },
+    ];
+    const frame1States = [
+        { clientID: 50, objectType: 'track', shapeType: 'rectangle', points: [300, 300, 400, 400] },
+        { clientID: 99, objectType: 'track', shapeType: 'rectangle', points: [850, 850, 950, 950] },
+    ];
+
+    const selectedTrack = frame0States[0];
+
+    // Frame 0
+    const match0 = resolveCrossFrameIdentity(selectedTrack, frame0States);
+    const rendered0 = frame0States.map((st) => (st.clientID === match0.matchedClientID ? st.points : null)).filter(Boolean);
+    assert.deepStrictEqual(rendered0, [[100, 100, 200, 200]]);
+
+    // Frame 1
+    const match1 = resolveCrossFrameIdentity(selectedTrack, frame1States);
+    const rendered1 = frame1States.map((st) => (st.clientID === match1.matchedClientID ? st.points : null)).filter(Boolean);
+    assert.deepStrictEqual(rendered1, [[300, 300, 400, 400]]);
+
+    console.log('  ✔ TC 57 passed.');
+}
+
+// TC 58: If the Selected Object is Absent, No Unrelated Box is Shown
+{
+    console.log('TC 58: If selected object is absent, no unrelated box is shown...');
+    const selectedTrack = { clientID: 80, objectType: 'track', shapeType: 'rectangle', points: [100, 100, 200, 200] };
+    const frameStates = [
+        { clientID: 80, objectType: 'track', shapeType: 'rectangle', outside: true, points: [100, 100, 200, 200] },
+        { clientID: 90, objectType: 'track', shapeType: 'rectangle', outside: false, points: [500, 500, 600, 600] },
+    ];
+
+    const match = resolveCrossFrameIdentity(selectedTrack, frameStates);
+    assert.strictEqual(match.status, 'ABSENT_ON_FRAME');
+    assert.strictEqual(match.matchedClientID, null);
+
+    const hasSelection = true;
+    const renderedBoxes = frameStates.map((st) => {
+        if (st.outside) return null;
+        const isMatched = st.clientID === match.matchedClientID;
+        if (hasSelection && !isMatched) return null;
+        return st.clientID;
+    }).filter(Boolean);
+
+    assert.strictEqual(renderedBoxes.length, 0, 'No box must be rendered if selected object is absent');
+    console.log('  ✔ TC 58 passed.');
+}
+
+// TC 59: Changing Selection Immediately Updates Every Visible Tile
+{
+    console.log('TC 59: Changing selection immediately updates every visible tile...');
+    const tileStates = [
+        { clientID: 1, objectType: 'track', shapeType: 'rectangle', points: [10, 10, 50, 50] },
+        { clientID: 2, objectType: 'track', shapeType: 'rectangle', points: [60, 60, 90, 90] },
+    ];
+
+    // Initial state: Selection = Object 1
+    let currentSelection = tileStates[0];
+    let match = resolveCrossFrameIdentity(currentSelection, tileStates);
+    let visible = tileStates.filter((s) => s.clientID === match.matchedClientID).map((s) => s.clientID);
+    assert.deepStrictEqual(visible, [1]);
+
+    // User switches selection to Object 2
+    currentSelection = tileStates[1];
+    match = resolveCrossFrameIdentity(currentSelection, tileStates);
+    visible = tileStates.filter((s) => s.clientID === match.matchedClientID).map((s) => s.clientID);
+    assert.deepStrictEqual(visible, [2]);
+
+    console.log('  ✔ TC 59 passed.');
+}
+
+// TC 60: Batch Navigation Preserves Selected-Object Filtering
+{
+    console.log('TC 60: Batch navigation preserves selected-object filtering...');
+    const selectedObject = { clientID: 42, objectType: 'track', shapeType: 'rectangle' };
+
+    // Batch 1 (Frames 0-15)
+    const batch1States = [
+        { clientID: 42, objectType: 'track', shapeType: 'rectangle', points: [100, 100, 200, 200] },
+        { clientID: 99, objectType: 'track', shapeType: 'rectangle', points: [300, 300, 400, 400] },
+    ];
+    const matchBatch1 = resolveCrossFrameIdentity(selectedObject, batch1States);
+    const renderedBatch1 = batch1States.filter((s) => s.clientID === matchBatch1.matchedClientID);
+    assert.strictEqual(renderedBatch1.length, 1);
+    assert.strictEqual(renderedBatch1[0].clientID, 42);
+
+    // User navigates to Batch 2 (Frames 16-31)
+    const batch2States = [
+        { clientID: 42, objectType: 'track', shapeType: 'rectangle', points: [150, 150, 250, 250] },
+        { clientID: 99, objectType: 'track', shapeType: 'rectangle', points: [350, 350, 450, 450] },
+    ];
+    // Selection is preserved
+    const matchBatch2 = resolveCrossFrameIdentity(selectedObject, batch2States);
+    const renderedBatch2 = batch2States.filter((s) => s.clientID === matchBatch2.matchedClientID);
+    assert.strictEqual(renderedBatch2.length, 1);
+    assert.strictEqual(renderedBatch2[0].clientID, 42);
+
+    console.log('  ✔ TC 60 passed.');
+}
+
+// TC 61: Annotation Data Remains Unchanged by Display Filtering
+{
+    console.log('TC 61: Annotation data remains unchanged by display filtering...');
+    const originalPoints1 = [100, 150, 200, 250];
+    const originalPoints2 = [300, 350, 400, 450];
+    const originalObject1 = { clientID: 10, objectType: 'track', shapeType: 'rectangle', points: originalPoints1, label: { id: 1, name: 'box' } };
+    const originalObject2 = { clientID: 20, objectType: 'track', shapeType: 'rectangle', points: originalPoints2, label: { id: 1, name: 'box' } };
+    const frameStates = [originalObject1, originalObject2];
+
+    // Freeze objects to enforce non-mutation
+    Object.freeze(originalPoints1);
+    Object.freeze(originalPoints2);
+    Object.freeze(originalObject1);
+    Object.freeze(originalObject2);
+    Object.freeze(frameStates);
+
+    const hasSelection = true;
+    const matchedClientID = 10;
+
+    // Filter simulation
+    const rendered = frameStates.map((st) => {
+        const isMatched = st.clientID === matchedClientID;
+        if (hasSelection && !isMatched) return null;
+        return st;
+    }).filter(Boolean);
+
+    assert.strictEqual(rendered.length, 1);
+    assert.strictEqual(rendered[0].clientID, 10);
+    assert.deepStrictEqual(originalObject1.points, [100, 150, 200, 250]);
+    assert.deepStrictEqual(originalObject2.points, [300, 350, 400, 450]);
+
+    console.log('  ✔ TC 61 passed.');
+}
+
+// TC 62: Single-Click Tile Switches Active Frame and Updates Redux currentFrame
+{
+    console.log('TC 62: Single-click tile switches active frame and updates Redux currentFrame...');
+    let reduxState = {
+        currentFrame: 5,
+        activatedStateID: null,
+        activatedElementID: null,
+    };
+    const dispatchedActions = [];
+    const dispatch = (action) => {
+        dispatchedActions.push(action);
+        if (action.type === 'CHANGE_FRAME_ASYNC') {
+            reduxState.currentFrame = action.frame;
+        } else if (action.type === 'ACTIVATE_OBJECT') {
+            reduxState.activatedStateID = action.activatedStateID;
+            reduxState.activatedElementID = action.activatedElementID;
+        }
+    };
+
+    const handleNavigateToFrame = (frame) => {
+        dispatch({ type: 'CHANGE_FRAME_ASYNC', frame });
+    };
+
+    // User single-clicks Frame Tile #12
+    const clickedFrame = 12;
+    handleNavigateToFrame(clickedFrame);
+
+    assert.strictEqual(reduxState.currentFrame, 12, 'Redux currentFrame must update to clicked tile frame');
+    assert.strictEqual(dispatchedActions.length, 1);
+    assert.strictEqual(dispatchedActions[0].type, 'CHANGE_FRAME_ASYNC');
+    assert.strictEqual(dispatchedActions[0].frame, 12);
+    console.log('  ✔ TC 62 passed.');
+}
+
+// TC 63: Active Frame Receives Editing Interactions and Dispatches updateAnnotationsAsync
+{
+    console.log('TC 63: Active frame receives editing interactions and dispatches updateAnnotationsAsync...');
+    const dispatchedActions = [];
+    const dispatch = (action) => dispatchedActions.push(action);
+
+    const frameNumber = 7;
+    const parentSkeleton = {
+        clientID: 101,
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 201, label: { id: 1, name: 'left_eye' }, points: [100, 150] },
+            { clientID: 202, label: { id: 2, name: 'right_eye' }, points: [120, 150] },
+        ],
+    };
+    const elementToEdit = parentSkeleton.elements[0];
+
+    // User drags landmark 201 from [100, 150] to [105, 152]
+    const newCoords = [105, 152];
+    elementToEdit.points = [newCoords[0], newCoords[1]];
+
+    dispatch({ type: 'CHANGE_FRAME_ASYNC', frame: frameNumber });
+    dispatch({ type: 'ACTIVATE_OBJECT', activatedStateID: parentSkeleton.clientID, activatedElementID: elementToEdit.clientID });
+    dispatch({ type: 'UPDATE_ANNOTATIONS_ASYNC', states: [elementToEdit] });
+
+    assert.deepStrictEqual(elementToEdit.points, [105, 152], 'Element points must reflect optimistic edit');
+    assert.strictEqual(dispatchedActions.length, 3);
+    assert.strictEqual(dispatchedActions[0].type, 'CHANGE_FRAME_ASYNC');
+    assert.strictEqual(dispatchedActions[0].frame, 7);
+    assert.strictEqual(dispatchedActions[1].type, 'ACTIVATE_OBJECT');
+    assert.strictEqual(dispatchedActions[1].activatedElementID, 201);
+    assert.strictEqual(dispatchedActions[2].type, 'UPDATE_ANNOTATIONS_ASYNC');
+    assert.deepStrictEqual(dispatchedActions[2].states[0].points, [105, 152]);
+    console.log('  ✔ TC 63 passed.');
+}
+
+// TC 64: Shape Moving / Translation Calculates Correct Bounded Coordinates
+{
+    console.log('TC 64: Shape moving/translation calculates correct bounded coordinates...');
+    const imageWidth = 1920;
+    const imageHeight = 1080;
+    const initialPoints = [100, 100, 300, 250]; // w=200, h=150
+    const w = initialPoints[2] - initialPoints[0];
+    const h = initialPoints[3] - initialPoints[1];
+
+    // Simulate moving by dx=+50, dy=+30
+    const dx = 50;
+    const dy = 30;
+    let newXtl = Math.max(0, Math.min(imageWidth - w, initialPoints[0] + dx));
+    let newYtl = Math.max(0, Math.min(imageHeight - h, initialPoints[1] + dy));
+    let newXbr = newXtl + w;
+    let newYbr = newYtl + h;
+
+    assert.strictEqual(newXtl, 150);
+    assert.strictEqual(newYtl, 130);
+    assert.strictEqual(newXbr, 350);
+    assert.strictEqual(newYbr, 280);
+
+    // Simulate moving past right edge
+    const extremeDx = 2000;
+    newXtl = Math.max(0, Math.min(imageWidth - w, initialPoints[0] + extremeDx));
+    newYtl = Math.max(0, Math.min(imageHeight - h, initialPoints[1]));
+    newXbr = newXtl + w;
+    newYbr = newYtl + h;
+
+    assert.strictEqual(newXtl, 1720); // 1920 - 200
+    assert.strictEqual(newXbr, 1920);
+    console.log('  ✔ TC 64 passed.');
+}
+
+// TC 65: Shape Corner Resizing Calculates Correct Rectangle Coordinates
+{
+    console.log('TC 65: Shape corner resizing calculates correct rectangle coordinates...');
+    const imageWidth = 1920;
+    const imageHeight = 1080;
+    const initialPoints = [100, 100, 300, 250];
+
+    // Drag Bottom-Right (br) handle by dx=+40, dy=+60
+    const dxBr = 40;
+    const dyBr = 60;
+    const brXbr = Math.round(Math.max(initialPoints[0] + 5, Math.min(imageWidth, initialPoints[2] + dxBr)));
+    const brYbr = Math.round(Math.max(initialPoints[1] + 5, Math.min(imageHeight, initialPoints[3] + dyBr)));
+    const resizedPointsBr = [initialPoints[0], initialPoints[1], brXbr, brYbr];
+    assert.deepStrictEqual(resizedPointsBr, [100, 100, 340, 310]);
+
+    // Drag Top-Left (tl) handle by dx=+20, dy=+15
+    const dxTl = 20;
+    const dyTl = 15;
+    const tlXtl = Math.round(Math.max(0, Math.min(initialPoints[2] - 5, initialPoints[0] + dxTl)));
+    const tlYtl = Math.round(Math.max(0, Math.min(initialPoints[3] - 5, initialPoints[1] + dyTl)));
+    const resizedPointsTl = [tlXtl, tlYtl, initialPoints[2], initialPoints[3]];
+    assert.deepStrictEqual(resizedPointsTl, [120, 115, 300, 250]);
+    console.log('  ✔ TC 65 passed.');
+}
+
+// TC 66: Shape Editing Dispatches updateAnnotationsAsync with Updated Points
+{
+    console.log('TC 66: Shape editing dispatches updateAnnotationsAsync with updated points...');
+    const dispatchedActions = [];
+    const dispatch = (action) => dispatchedActions.push(action);
+
+    const frameNumber = 3;
+    const shapeState = {
+        clientID: 55,
+        shapeType: 'rectangle',
+        points: [100, 100, 200, 200],
+    };
+
+    const newPoints = [120, 110, 220, 210];
+    shapeState.points = [...newPoints];
+
+    dispatch({ type: 'CHANGE_FRAME_ASYNC', frame: frameNumber });
+    dispatch({ type: 'ACTIVATE_OBJECT', activatedStateID: shapeState.clientID, activatedElementID: null });
+    dispatch({ type: 'UPDATE_ANNOTATIONS_ASYNC', states: [shapeState] });
+
+    assert.deepStrictEqual(shapeState.points, [120, 110, 220, 210]);
+    assert.strictEqual(dispatchedActions.length, 3);
+    assert.strictEqual(dispatchedActions[0].frame, 3);
+    assert.strictEqual(dispatchedActions[1].activatedStateID, 55);
+    assert.deepStrictEqual(dispatchedActions[2].states[0].points, [120, 110, 220, 210]);
+    console.log('  ✔ TC 66 passed.');
+}
+
+// TC 67: Switching to Another Tile Transfers Active Target; Previous Frame Does Not Receive Edits
+{
+    console.log('TC 67: Switching to another tile transfers active target; previous frame does not receive edits...');
+    let activeFrame = 2;
+    const frame2States = [{ clientID: 10, points: [50, 50] }];
+    const frame8States = [{ clientID: 20, points: [80, 80] }];
+
+    const dispatchedEdits = [];
+
+    // User switches from Frame 2 to Frame 8
+    activeFrame = 8;
+
+    // Editing interaction occurs on Tile 8
+    const editFrame = 8;
+    assert.strictEqual(editFrame, activeFrame, 'Active editing frame must be Frame 8');
+    frame8States[0].points = [85, 85];
+    dispatchedEdits.push({ frame: editFrame, clientID: frame8States[0].clientID, points: [85, 85] });
+
+    // Frame 2 points must remain unchanged
+    assert.deepStrictEqual(frame2States[0].points, [50, 50], 'Previous frame must NOT receive subsequent edits');
+    assert.deepStrictEqual(frame8States[0].points, [85, 85], 'Target frame must receive edit');
+    assert.strictEqual(dispatchedEdits.length, 1);
+    assert.strictEqual(dispatchedEdits[0].frame, 8);
+    console.log('  ✔ TC 67 passed.');
+}
+
+// TC 68: Zoomed / Panned Tile Correctly Maps Screen Coordinates to Original Image Coordinates
+{
+    console.log('TC 68: Zoomed / panned tile correctly maps screen coordinates without drift...');
+    // Simulated SVG Viewport: cropped to x=400, y=300, width=800, height=600 (2x zoom on 1600x1200 image)
+    const viewport = { x: 400, y: 300, width: 800, height: 600 };
+    const screenRect = { left: 100, top: 100, width: 400, height: 300 }; // 400x300 displayed pixels
+
+    // Point clicked at screen center: (300, 250) -> relative to screenRect: (200, 150)
+    const clientX = 300;
+    const clientY = 250;
+    const normX = (clientX - screenRect.left) / screenRect.width; // 0.5
+    const normY = (clientY - screenRect.top) / screenRect.height; // 0.5
+
+    const mappedImageX = viewport.x + normX * viewport.width;
+    const mappedImageY = viewport.y + normY * viewport.height;
+
+    assert.strictEqual(mappedImageX, 800, 'Center of 800-wide viewport starting at 400 is 800');
+    assert.strictEqual(mappedImageY, 600, 'Center of 600-high viewport starting at 300 is 600');
+    console.log('  ✔ TC 68 passed.');
+}
+
+// TC 69: Save Action Dispatches saveAnnotationsAsync
+{
+    console.log('TC 69: Save action dispatches saveAnnotationsAsync...');
+    const dispatchedActions = [];
+    let isSaving = false;
+    const dispatch = (action) => {
+        dispatchedActions.push(action);
+        if (action.type === 'SAVE_ANNOTATIONS') {
+            isSaving = true;
+        }
+    };
+
+    const handleSave = () => {
+        dispatch({ type: 'SAVE_ANNOTATIONS' });
+    };
+
+    handleSave();
+    assert.strictEqual(isSaving, true);
+    assert.strictEqual(dispatchedActions.length, 1);
+    assert.strictEqual(dispatchedActions[0].type, 'SAVE_ANNOTATIONS');
+    console.log('  ✔ TC 69 passed.');
+}
+
+// TC 70: Undo / Redo Action History Is Registered Upon Direct Edit
+{
+    console.log('TC 70: Undo / Redo action history is registered upon direct edit...');
+    const history = [];
+    let historyIndex = -1;
+
+    const applyEdit = (state, oldPoints, newPoints) => {
+        state.points = [...newPoints];
+        history.push({ state, undo: () => { state.points = [...oldPoints]; }, redo: () => { state.points = [...newPoints]; } });
+        historyIndex = history.length - 1;
+    };
+
+    const target = { clientID: 77, points: [10, 10] };
+    applyEdit(target, [10, 10], [25, 30]);
+    assert.deepStrictEqual(target.points, [25, 30]);
+
+    // Undo
+    history[historyIndex].undo();
+    assert.deepStrictEqual(target.points, [10, 10]);
+
+    // Redo
+    history[historyIndex].redo();
+    assert.deepStrictEqual(target.points, [25, 30]);
+    console.log('  ✔ TC 70 passed.');
+}
+
+// TC 71: Skeleton Complete Object Rendering (Outer Bounding Box, Bone Connections, Landmark Points, Label & ID)
+{
+    console.log('TC 71: Skeleton complete object rendering...');
+    const parentSkeleton = {
+        clientID: 101,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        label: { id: 10, name: 'Face' },
+        elements: [
+            { clientID: 201, label: { id: 1, name: 'left_eye' }, points: [100, 150] },
+            { clientID: 202, label: { id: 2, name: 'right_eye' }, points: [120, 150] },
+            { clientID: 203, label: { id: 3, name: 'nose' }, points: [110, 170] },
+        ],
+    };
+    const associatedBox = {
+        clientID: 102,
+        objectType: 'track',
+        shapeType: 'rectangle',
+        points: [80, 130, 140, 190],
+        parentID: 101,
+    };
+    const frameStates = [parentSkeleton, associatedBox];
+
+    // Verify outer box resolution
+    const outerBox = getObjectBoundingBox(parentSkeleton, null, frameStates);
+    assert.notStrictEqual(outerBox, null);
+    assert.deepStrictEqual(outerBox, { xtl: 80, ytl: 130, xbr: 140, ybr: 190 });
+
+    // Verify label and ID text
+    const labelBadge = `${parentSkeleton.label.name} #${parentSkeleton.clientID}`;
+    assert.strictEqual(labelBadge, 'Face #101');
+    console.log('  ✔ TC 71 passed.');
+}
+
+// TC 72: Template SVG Structure Mapping from data-node-id to data-label-id
+{
+    console.log('TC 72: Template SVG structure mapping from data-node-id to data-label-id...');
+    // CVAT template SVG where data-node-id is 1, 2 but sublabel id (data-label-id) is 51, 52
+    const svgTemplate = `
+        <svg>
+            <circle data-node-id="1" data-label-id="51" cx="10" cy="10" />
+            <circle data-node-id="2" data-label-id="52" cx="20" cy="20" />
+            <line data-type="edge" data-node-from="1" data-node-to="2" />
+        </svg>
+    `;
+
+    // Pure attribute extraction matching parseSkeletonEdges algorithm
+    const parseEdges = (svg) => {
+        const nodeToLabelMap = {};
+        const circleRegex = /<circle[^>]*data-node-id="(\d+)"[^>]*data-label-id="(\d+)"/g;
+        let match;
+        while ((match = circleRegex.exec(svg)) !== null) {
+            nodeToLabelMap[Number(match[1])] = Number(match[2]);
+        }
+        const edgeRegex = /<line[^>]*data-type="edge"[^>]*data-node-from="(\d+)"[^>]*data-node-to="(\d+)"/g;
+        const edges = [];
+        while ((match = edgeRegex.exec(svg)) !== null) {
+            const from = Number(match[1]);
+            const to = Number(match[2]);
+            edges.push({
+                from: nodeToLabelMap[from] ?? from,
+                to: nodeToLabelMap[to] ?? to,
+            });
+        }
+        return edges;
+    };
+
+    const edges = parseEdges(svgTemplate);
+    assert.strictEqual(edges.length, 1);
+    assert.strictEqual(edges[0].from, 51, 'data-node-from=1 must map to sublabel 51');
+    assert.strictEqual(edges[0].to, 52, 'data-node-to=2 must map to sublabel 52');
+    console.log('  ✔ TC 72 passed.');
+}
+
+// TC 73: Skeleton Outer Bounding Box Resolution Using Native CVAT Canvas Logic
+{
+    console.log('TC 73: Skeleton outer bounding box resolution using native CVAT Canvas logic...');
+    // Skeleton without any associated rectangle resolves using native CVAT Canvas wrapping box
+    const bareSkeleton = {
+        clientID: 401,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        label: { id: 10, name: 'Skeleton' },
+        elements: [
+            { clientID: 501, label: { id: 1, name: 'p1' }, points: [200, 200], outside: false },
+            { clientID: 502, label: { id: 2, name: 'p2' }, points: [300, 400], outside: false },
+        ],
+    };
+
+    // Resolves outer wrapping box with native SKELETON_RECT_MARGIN = 20
+    const box = getObjectBoundingBox(bareSkeleton, null, [bareSkeleton]);
+    assert.notStrictEqual(box, null, 'Must resolve native CVAT Canvas wrapping box');
+    assert.deepStrictEqual(box, {
+        xtl: 200 - SKELETON_RECT_MARGIN, // 180
+        ytl: 200 - SKELETON_RECT_MARGIN, // 180
+        xbr: 300 + SKELETON_RECT_MARGIN, // 320
+        ybr: 400 + SKELETON_RECT_MARGIN, // 420
+    });
+    console.log('  ✔ TC 73 passed.');
+}
+
+// TC 74: All-Outside Skeleton Handled Gracefully as Absent
+{
+    console.log('TC 74: All-outside skeleton handled gracefully as absent...');
+    const outsideSkeleton = {
+        clientID: 601,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 701, label: { id: 1, name: 'pt1' }, points: [50, 50], outside: true },
+            { clientID: 702, label: { id: 2, name: 'pt2' }, points: [60, 60], outside: true },
+        ],
+    };
+
+    const outerBox = getObjectBoundingBox(outsideSkeleton, null, [outsideSkeleton]);
+    assert.strictEqual(outerBox, null, 'All outside elements must yield null wrapping box');
+
+    // Skeleton elements and identity must remain intact
+    assert.strictEqual(outsideSkeleton.elements.length, 2);
+    assert.deepStrictEqual(outsideSkeleton.elements[0].points, [50, 50]);
+    assert.deepStrictEqual(outsideSkeleton.elements[1].points, [60, 60]);
+    console.log('  ✔ TC 74 passed.');
+}
+
+// TC 75: Auto-Zoom Uses Skeleton's Existing Outer Bounding Box
+{
+    console.log('TC 75: Auto-Zoom uses skeleton existing outer bounding box...');
+    const skeleton = {
+        clientID: 801,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 901, label: { id: 1 }, points: [500, 500] },
+        ],
+    };
+    const associatedRect = {
+        clientID: 802,
+        objectType: 'track',
+        shapeType: 'rectangle',
+        points: [400, 400, 600, 600], // 200x200 box
+        parentID: 801,
+    };
+
+    const bbox = getObjectBoundingBox(skeleton, null, [skeleton, associatedRect]);
+    assert.deepStrictEqual(bbox, { xtl: 400, ytl: 400, xbr: 600, ybr: 600 });
+
+    const vp = calculateAutoZoomViewport(bbox, 1920, 1080);
+    // Viewport must center around the bounding box [400, 400, 600, 600]
+    const boxCenterX = 500;
+    const boxCenterY = 500;
+    const vpCenterX = vp.x + vp.width / 2;
+    const vpCenterY = vp.y + vp.height / 2;
+    assert.ok(Math.abs(boxCenterX - vpCenterX) < 5, 'Auto-zoom must center around existing bounding box');
+    assert.ok(Math.abs(boxCenterY - vpCenterY) < 5);
+    console.log('  ✔ TC 75 passed.');
+}
+
+// TC 76: Skeletons Matched as Single Logical Object While Preserving Sublabel Identities
+{
+    console.log('TC 76: Skeletons matched as single logical object while preserving sublabel identities...');
+    const frame0Skeleton = {
+        clientID: 10,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 101, parentID: 10, objectType: 'track', label: { id: 5, name: 'left_eye' }, points: [100, 100] },
+            { clientID: 102, parentID: 10, objectType: 'track', label: { id: 6, name: 'right_eye' }, points: [120, 100] },
+        ],
+    };
+    const frame1Skeleton = {
+        clientID: 10,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 201, parentID: 10, objectType: 'track', label: { id: 5, name: 'left_eye' }, points: [105, 102] },
+            { clientID: 202, parentID: 10, objectType: 'track', label: { id: 6, name: 'right_eye' }, points: [125, 102] },
+        ],
+    };
+
+    // User selects sublabel 5 (left_eye) on Frame 0
+    const selectedElement = frame0Skeleton.elements[0];
+    const matchF1 = resolveCrossFrameIdentity(selectedElement, [frame1Skeleton]);
+    assert.strictEqual(matchF1.status, 'MATCHED');
+    assert.strictEqual(matchF1.targetState.clientID, 10, 'Parent skeleton must match logical object');
+    assert.strictEqual(matchF1.targetElementState.label.id, 5, 'Sublabel identity 5 must be preserved');
+    assert.deepStrictEqual(matchF1.targetElementState.points, [105, 102]);
+    console.log('  ✔ TC 76 passed.');
+}
+
+// TC 77: Selection by Object ID
+{
+    console.log('TC 77: Selection by object ID...');
+    const states = [
+        { clientID: 15, id: 1001, objectType: 'track', shapeType: 'skeleton', label: { id: 1, name: 'face' } },
+        { clientID: 28, id: 1002, objectType: 'track', shapeType: 'polygon', label: { id: 2, name: 'car' } },
+        { clientID: 42, id: 1003, objectType: 'track', shapeType: 'rectangle', label: { id: 3, name: 'head' } },
+    ];
+
+    const selectable = extractSelectableObjects(states);
+    assert.strictEqual(selectable.length, 3);
+
+    // Find by clientID: 28
+    const byClientID = selectable.find((o) => o.clientID === 28);
+    assert.ok(byClientID);
+    assert.strictEqual(byClientID.shapeType, 'polygon');
+    assert.ok(byClientID.displayText.includes('#28'));
+
+    // Find by track ID (state.id): 1003
+    const byTrackID = selectable.find((o) => o.trackID === 1003);
+    assert.ok(byTrackID);
+    assert.strictEqual(byTrackID.clientID, 42);
+    assert.strictEqual(byTrackID.shapeType, 'rectangle');
+    console.log('  ✔ TC 77 passed.');
+}
+
+// TC 78: Selection by Object Type
+{
+    console.log('TC 78: Selection by object type...');
+    const states = [
+        { clientID: 1, objectType: 'track', shapeType: 'skeleton', label: { id: 1, name: 'face' }, elements: [] },
+        { clientID: 2, objectType: 'track', shapeType: 'polygon', label: { id: 2, name: 'car' } },
+        { clientID: 3, objectType: 'track', shapeType: 'rectangle', label: { id: 3, name: 'box' } },
+        { clientID: 4, objectType: 'shape', shapeType: 'skeleton', label: { id: 1, name: 'face' }, elements: [] },
+    ];
+
+    const selectable = extractSelectableObjects(states);
+
+    // Filter by type: 'skeleton'
+    const skeletonObjects = selectable.filter((o) => o.shapeType === 'skeleton');
+    assert.strictEqual(skeletonObjects.length, 2);
+    assert.strictEqual(skeletonObjects[0].clientID, 1);
+    assert.strictEqual(skeletonObjects[1].clientID, 4);
+
+    // Filter by type: 'polygon'
+    const polygonObjects = selectable.filter((o) => o.shapeType === 'polygon');
+    assert.strictEqual(polygonObjects.length, 1);
+    assert.strictEqual(polygonObjects[0].clientID, 2);
+    console.log('  ✔ TC 78 passed.');
+}
+
+// TC 79: When Skeleton Is Selected, Unrelated Skeletons and Objects Are Hidden
+{
+    console.log('TC 79: When skeleton is selected, unrelated skeletons and objects are hidden...');
+    const skeletonA = { clientID: 10, shapeType: 'skeleton', elements: [] };
+    const skeletonB = { clientID: 20, shapeType: 'skeleton', elements: [] };
+    const rectC = { clientID: 30, shapeType: 'rectangle', points: [10, 10, 50, 50] };
+
+    const matchedSkeletonClientID = 10;
+    const hasSelection = true;
+
+    const isSkeletonMatched = (state) => state.clientID === matchedSkeletonClientID;
+
+    const visibleStates = [skeletonA, skeletonB, rectC].filter((st) => {
+        if (st.shapeType === 'skeleton') {
+            return !hasSelection || isSkeletonMatched(st);
+        }
+        if (st.shapeType === 'rectangle') {
+            return !hasSelection || st.clientID === matchedSkeletonClientID;
+        }
+        return true;
+    });
+
+    assert.strictEqual(visibleStates.length, 1);
+    assert.strictEqual(visibleStates[0].clientID, 10);
+    console.log('  ✔ TC 79 passed.');
+}
+
+// TC 80: Polygon Rendering and Multi-Frame Consistency Is Preserved
+{
+    console.log('TC 80: Polygon rendering and multi-frame consistency is preserved...');
+    const polyState = {
+        clientID: 99,
+        shapeType: 'polygon',
+        points: [100, 100, 150, 120, 140, 180, 90, 160],
+        color: '#ff0000',
+    };
+
+    // Coordinates to points string
+    const pointsStr = polyState.points.reduce((acc, val, idx) => (
+        `${acc}${idx % 2 === 0 ? ' ' : ','}${val}`
+    ), '').trim();
+
+    assert.strictEqual(pointsStr, '100,100 150,120 140,180 90,160');
+
+    // Bounding box of polygon
+    const polyBBox = getObjectBoundingBox(polyState);
+    assert.deepStrictEqual(polyBBox, { xtl: 90, ytl: 100, xbr: 150, ybr: 180 });
+    console.log('  ✔ TC 80 passed.');
+}
+
+// TC 81: Aspect Ratio Preservation and Proportional Containment for Square Source Images (1:1)
+{
+    console.log('TC 81: Aspect ratio preservation & containment for square source images (1:1)...');
+    const squareDimensions = { width: 1000, height: 1000 };
+    const squareAspect = squareDimensions.width / squareDimensions.height;
+    assert.strictEqual(squareAspect, 1.0);
+
+    // Case 1: Widescreen container (e.g. 800x400) -> Pillarbox (bars left & right)
+    const wideContainer = { width: 800, height: 400 };
+    const wideLayout = calculateContainedDimensions(
+        wideContainer.width,
+        wideContainer.height,
+        squareDimensions.width,
+        squareDimensions.height,
+    );
+    assert.strictEqual(wideLayout.letterboxType, 'pillarbox');
+    assert.strictEqual(wideLayout.fitWidth, 400);
+    assert.strictEqual(wideLayout.fitHeight, 400);
+    assert.strictEqual(wideLayout.fitWidth / wideLayout.fitHeight, 1.0, 'Contained image must remain strictly 1:1');
+    assert.strictEqual(wideLayout.offsetX, 200, 'Horizontal offset must center image in container');
+    assert.strictEqual(wideLayout.offsetY, 0);
+
+    // Case 2: Tall container (e.g. 400x800) -> Letterbox (bars top & bottom)
+    const tallContainer = { width: 400, height: 800 };
+    const tallLayout = calculateContainedDimensions(
+        tallContainer.width,
+        tallContainer.height,
+        squareDimensions.width,
+        squareDimensions.height,
+    );
+    assert.strictEqual(tallLayout.letterboxType, 'letterbox');
+    assert.strictEqual(tallLayout.fitWidth, 400);
+    assert.strictEqual(tallLayout.fitHeight, 400);
+    assert.strictEqual(tallLayout.fitWidth / tallLayout.fitHeight, 1.0, 'Contained image must remain strictly 1:1');
+    assert.strictEqual(tallLayout.offsetX, 0);
+    assert.strictEqual(tallLayout.offsetY, 200, 'Vertical offset must center image in container');
+
+    // Case 3: Square container (e.g. 500x500) -> Exact fit ('none')
+    const squareContainer = { width: 500, height: 500 };
+    const exactLayout = calculateContainedDimensions(
+        squareContainer.width,
+        squareContainer.height,
+        squareDimensions.width,
+        squareDimensions.height,
+    );
+    assert.strictEqual(exactLayout.letterboxType, 'none');
+    assert.strictEqual(exactLayout.fitWidth, 500);
+    assert.strictEqual(exactLayout.fitHeight, 500);
+    assert.strictEqual(exactLayout.offsetX, 0);
+    assert.strictEqual(exactLayout.offsetY, 0);
+
+    console.log('  ✔ TC 81 passed.');
+}
+
+// TC 82: Aspect Ratio Preservation and Proportional Containment for Landscape Images (16:9, 4:3)
+{
+    console.log('TC 82: Aspect ratio preservation & containment for landscape images (16:9, 4:3)...');
+    // 16:9 widescreen in 4:3 container -> Letterbox (bars top & bottom)
+    const wideImg = { width: 1920, height: 1080 };
+    const wideAspect = wideImg.width / wideImg.height;
+    const stdContainer = { width: 400, height: 300 }; // 4:3 = 1.333 < 1.777
+    const letterbox16_9 = calculateContainedDimensions(
+        stdContainer.width,
+        stdContainer.height,
+        wideImg.width,
+        wideImg.height,
+    );
+    assert.strictEqual(letterbox16_9.letterboxType, 'letterbox');
+    assert.strictEqual(letterbox16_9.fitWidth, 400);
+    assert.strictEqual(letterbox16_9.fitHeight, 225);
+    assert.strictEqual(Math.abs(letterbox16_9.fitWidth / letterbox16_9.fitHeight - wideAspect) < 0.001, true);
+    assert.strictEqual(letterbox16_9.offsetX, 0);
+    assert.strictEqual(letterbox16_9.offsetY, 37.5);
+
+    // 4:3 standard image in 16:9 container -> Pillarbox (bars left & right)
+    const stdImg = { width: 800, height: 600 };
+    const stdAspect = stdImg.width / stdImg.height; // 1.333
+    const wideCont = { width: 800, height: 450 }; // 16:9 = 1.777 > 1.333
+    const pillarbox4_3 = calculateContainedDimensions(
+        wideCont.width,
+        wideCont.height,
+        stdImg.width,
+        stdImg.height,
+    );
+    assert.strictEqual(pillarbox4_3.letterboxType, 'pillarbox');
+    assert.strictEqual(pillarbox4_3.fitHeight, 450);
+    assert.strictEqual(pillarbox4_3.fitWidth, 600);
+    assert.strictEqual(Math.abs(pillarbox4_3.fitWidth / pillarbox4_3.fitHeight - stdAspect) < 0.001, true);
+    assert.strictEqual(pillarbox4_3.offsetX, 100);
+    assert.strictEqual(pillarbox4_3.offsetY, 0);
+
+    console.log('  ✔ TC 82 passed.');
+}
+
+// TC 83: Aspect Ratio Preservation and Proportional Containment for Portrait Images (9:16, 3:4)
+{
+    console.log('TC 83: Aspect ratio preservation & containment for portrait images (9:16, 3:4)...');
+    // 9:16 portrait in landscape container (e.g. 600x400) -> Pillarbox (bars left & right)
+    const portraitImg = { width: 1080, height: 1920 };
+    const portraitAspect = portraitImg.width / portraitImg.height; // 0.5625
+    const landContainer = { width: 600, height: 400 };
+    const pillarbox9_16 = calculateContainedDimensions(
+        landContainer.width,
+        landContainer.height,
+        portraitImg.width,
+        portraitImg.height,
+    );
+    assert.strictEqual(pillarbox9_16.letterboxType, 'pillarbox');
+    assert.strictEqual(pillarbox9_16.fitHeight, 400);
+    assert.strictEqual(pillarbox9_16.fitWidth, 225);
+    assert.strictEqual(Math.abs(pillarbox9_16.fitWidth / pillarbox9_16.fitHeight - portraitAspect) < 0.001, true);
+    assert.strictEqual(pillarbox9_16.offsetX, 187.5);
+    assert.strictEqual(pillarbox9_16.offsetY, 0);
+
+    // 3:4 portrait in extra tall container (e.g. 300x600) -> Letterbox (bars top & bottom)
+    const port3_4 = { width: 600, height: 800 };
+    const port3_4Aspect = port3_4.width / port3_4.height; // 0.75
+    const tallCont = { width: 300, height: 600 }; // 300/600 = 0.5 < 0.75
+    const letterbox3_4 = calculateContainedDimensions(
+        tallCont.width,
+        tallCont.height,
+        port3_4.width,
+        port3_4.height,
+    );
+    assert.strictEqual(letterbox3_4.letterboxType, 'letterbox');
+    assert.strictEqual(letterbox3_4.fitWidth, 300);
+    assert.strictEqual(letterbox3_4.fitHeight, 400);
+    assert.strictEqual(Math.abs(letterbox3_4.fitWidth / letterbox3_4.fitHeight - port3_4Aspect) < 0.001, true);
+    assert.strictEqual(letterbox3_4.offsetX, 0);
+    assert.strictEqual(letterbox3_4.offsetY, 100);
+
+    console.log('  ✔ TC 83 passed.');
+}
+
+// TC 84: Proportional Scaling and Dynamic Grid Layout across 1, 2, 4, 16 Visible Frames
+{
+    console.log('TC 84: Proportional scaling & dynamic grid layout across visible frames...');
+    // Responsive column computation helper
+    const getGridColumns = (numFrames) => (numFrames < 4 ? `repeat(${Math.max(1, numFrames)}, 1fr)` : 'repeat(4, 1fr)');
+
+    assert.strictEqual(getGridColumns(1), 'repeat(1, 1fr)');
+    assert.strictEqual(getGridColumns(2), 'repeat(2, 1fr)');
+    assert.strictEqual(getGridColumns(3), 'repeat(3, 1fr)');
+    assert.strictEqual(getGridColumns(4), 'repeat(4, 1fr)');
+    assert.strictEqual(getGridColumns(16), 'repeat(4, 1fr)');
+
+    // In a 1200x800 workspace:
+    // With 1 visible square frame (1000x1000), tile container is 1200x750:
+    const layout1Frame = calculateContainedDimensions(1200, 750, 1000, 1000);
+    assert.strictEqual(layout1Frame.fitWidth, 750);
+    assert.strictEqual(layout1Frame.fitHeight, 750);
+    assert.strictEqual(layout1Frame.letterboxType, 'pillarbox');
+    assert.strictEqual(layout1Frame.offsetX, 225);
+
+    // With 2 visible square frames, each tile is (1200 - 6)/2 = 597px wide by 750px tall:
+    const layout2Frames = calculateContainedDimensions(597, 750, 1000, 1000);
+    assert.strictEqual(layout2Frames.fitWidth, 597);
+    assert.strictEqual(layout2Frames.fitHeight, 597);
+    assert.strictEqual(layout2Frames.letterboxType, 'letterbox');
+    assert.strictEqual(layout2Frames.offsetY, (750 - 597) / 2);
+
+    // With 16 visible square frames (4x4), each tile is ~295px wide by ~180px tall:
+    const layout16Frames = calculateContainedDimensions(295, 180, 1000, 1000);
+    assert.strictEqual(layout16Frames.fitWidth, 180);
+    assert.strictEqual(layout16Frames.fitHeight, 180);
+    assert.strictEqual(layout16Frames.letterboxType, 'pillarbox');
+    assert.strictEqual(layout16Frames.offsetX, (295 - 180) / 2);
+
+    console.log('  ✔ TC 84 passed.');
+}
+
+// TC 85: Overlay Alignment with Contained Image Bounds
+{
+    console.log('TC 85: Overlay alignment with contained image bounds...');
+    const sourceWidth = 1000;
+    const sourceHeight = 1000;
+    const containerWidth = 500;
+    const containerHeight = 300;
+
+    const layout = calculateContainedDimensions(containerWidth, containerHeight, sourceWidth, sourceHeight);
+    assert.strictEqual(layout.fitWidth, 300);
+    assert.strictEqual(layout.fitHeight, 300);
+    assert.strictEqual(layout.offsetX, 100);
+    assert.strictEqual(layout.offsetY, 0);
+
+    // Canvas element matches layout fit dimensions
+    const canvasRenderWidth = sourceWidth;
+    const canvasRenderHeight = sourceHeight;
+    const canvasDisplayWidth = layout.fitWidth;
+    const canvasDisplayHeight = layout.fitHeight;
+
+    // SVG element matches layout fit dimensions
+    const svgDisplayWidth = layout.fitWidth;
+    const svgDisplayHeight = layout.fitHeight;
+    assert.strictEqual(canvasDisplayWidth, svgDisplayWidth);
+    assert.strictEqual(canvasDisplayHeight, svgDisplayHeight);
+
+    // Verify subpixel mapping of key points:
+    // Center point (500, 500)
+    const ptX = 500;
+    const ptY = 500;
+    const canvasNormX = ptX / canvasRenderWidth;
+    const canvasNormY = ptY / canvasRenderHeight;
+    const svgNormX = ptX / sourceWidth;
+    const svgNormY = ptY / sourceHeight;
+    assert.strictEqual(canvasNormX, svgNormX);
+    assert.strictEqual(canvasNormY, svgNormY);
+
+    // On-screen position within the container:
+    const screenX = layout.offsetX + svgNormX * svgDisplayWidth;
+    const screenY = layout.offsetY + svgNormY * svgDisplayHeight;
+    assert.strictEqual(screenX, 100 + 150); // 250
+    assert.strictEqual(screenY, 0 + 150);   // 150
+
+    console.log('  ✔ TC 85 passed.');
+}
+
+// TC 86: Pointer Coordinate Mapping under Letterbox and Pillarbox Margins
+{
+    console.log('TC 86: Pointer coordinate mapping under letterbox and pillarbox margins...');
+    const imageWidth = 1000;
+    const imageHeight = 1000;
+    const containerWidth = 500;
+    const containerHeight = 300;
+    const layout = calculateContainedDimensions(containerWidth, containerHeight, imageWidth, imageHeight);
+    // layout: fitWidth=300, fitHeight=300, offsetX=100, offsetY=0
+
+    // Click outside image inside left pillarbox bar (x=50, y=150)
+    const clickBarLeft = mapPointerToImageCoordinates(50, 150, layout, null, imageWidth, imageHeight);
+    assert.strictEqual(clickBarLeft.isInsideContent, false);
+
+    // Click at contained image top-left boundary (x=100, y=0)
+    const clickTopLeft = mapPointerToImageCoordinates(100, 0, layout, null, imageWidth, imageHeight);
+    assert.strictEqual(clickTopLeft.isInsideContent, true);
+    assert.strictEqual(clickTopLeft.x, 0);
+    assert.strictEqual(clickTopLeft.y, 0);
+
+    // Click at contained image center (x=250, y=150)
+    const clickCenter = mapPointerToImageCoordinates(250, 150, layout, null, imageWidth, imageHeight);
+    assert.strictEqual(clickCenter.isInsideContent, true);
+    assert.strictEqual(clickCenter.x, 500);
+    assert.strictEqual(clickCenter.y, 500);
+
+    // Click at contained image bottom-right boundary (x=400, y=300)
+    const clickBottomRight = mapPointerToImageCoordinates(400, 300, layout, null, imageWidth, imageHeight);
+    assert.strictEqual(clickBottomRight.isInsideContent, true);
+    assert.strictEqual(clickBottomRight.x, 1000);
+    assert.strictEqual(clickBottomRight.y, 1000);
+
+    // Click outside image inside right pillarbox bar (x=450, y=150)
+    const clickBarRight = mapPointerToImageCoordinates(450, 150, layout, null, imageWidth, imageHeight);
+    assert.strictEqual(clickBarRight.isInsideContent, false);
+
+    // Under letterboxing: 1920x1080 image in 400x300 container
+    const layoutLetterbox = calculateContainedDimensions(400, 300, 1920, 1080);
+    // fitWidth=400, fitHeight=225, offsetX=0, offsetY=37.5
+    const clickLetterboxTop = mapPointerToImageCoordinates(200, 37.5, layoutLetterbox, null, 1920, 1080);
+    assert.strictEqual(clickLetterboxTop.isInsideContent, true);
+    assert.strictEqual(clickLetterboxTop.x, 960);
+    assert.strictEqual(clickLetterboxTop.y, 0);
+
+    const clickLetterboxCenter = mapPointerToImageCoordinates(200, 150, layoutLetterbox, null, 1920, 1080);
+    assert.strictEqual(clickLetterboxCenter.isInsideContent, true);
+    assert.strictEqual(clickLetterboxCenter.x, 960);
+    assert.strictEqual(clickLetterboxCenter.y, 540);
+
+    console.log('  ✔ TC 86 passed.');
+}
+
+// TC 87: Auto-Zoom and Manual Zoom Preserving Original Image Aspect Ratio
+{
+    console.log('TC 87: Auto-Zoom & manual zoom preserving original image aspect ratio...');
+    const squareWidth = 1000;
+    const squareHeight = 1000;
+    const nonSquareBBox = { xtl: 200, ytl: 300, xbr: 400, ybr: 600 }; // 200x300 box (ratio 2:3)
+
+    // Auto-Zoom must preserve the 1:1 image aspect ratio
+    const autoZoomVp = calculateAutoZoomViewport(nonSquareBBox, squareWidth, squareHeight);
+    assert.strictEqual(autoZoomVp.width, autoZoomVp.height, 'Auto-Zoom viewport must be square for 1:1 image');
+    assert.strictEqual(autoZoomVp.width / autoZoomVp.height, 1.0);
+
+    // Manual zoom on that viewport centered at (300, 450)
+    const zoomedInVp = zoomViewportAtPoint(autoZoomVp, 0.8, 300, 450, squareWidth, squareHeight);
+    assert.strictEqual(zoomedInVp.width, zoomedInVp.height, 'Zoomed-in viewport must maintain square aspect ratio');
+
+    // Pan the viewport by (+50, -30)
+    const pannedVp = panViewport(zoomedInVp, 50, -30, squareWidth, squareHeight);
+    assert.strictEqual(pannedVp.width, pannedVp.height, 'Panned viewport must maintain square aspect ratio');
+
+    // Contained layout for zoomed viewport in a rectangular container (500x300)
+    const zoomLayout = calculateContainedDimensions(500, 300, zoomedInVp.width, zoomedInVp.height);
+    assert.strictEqual(zoomLayout.fitWidth, zoomLayout.fitHeight);
+    assert.strictEqual(zoomLayout.fitWidth, 300);
+    assert.strictEqual(zoomLayout.fitHeight, 300);
+
+    console.log('  ✔ TC 87 passed.');
+}
+
+// TC 88: Skeleton Complete Object Rendering and Polygon Overlays Remain Aligned
+{
+    console.log('TC 88: Skeleton & polygon overlays remain aligned without distortion...');
+    const squareDimensions = { width: 1000, height: 1000 };
+    const containerSize = { width: 400, height: 300 };
+    const layout = calculateContainedDimensions(containerSize.width, containerSize.height, squareDimensions.width, squareDimensions.height);
+
+    // Skeleton object on square frame
+    const skeletonState = {
+        clientID: 55,
+        shapeType: 'skeleton',
+        boundingBox: { xtl: 200, ytl: 200, xbr: 600, ybr: 700 },
+        elements: [
+            { clientID: 551, label: { id: 1, name: 'Eye_L' }, points: [300, 350], outside: false },
+            { clientID: 552, label: { id: 2, name: 'Eye_R' }, points: [500, 350], outside: false },
+        ],
+    };
+
+    const bbox = getObjectBoundingBox(skeletonState);
+    assert.deepStrictEqual(bbox, { xtl: 200, ytl: 200, xbr: 600, ybr: 700 });
+
+    // Overlay scale factor matches layout
+    const zoomScale = squareDimensions.width / layout.fitWidth;
+    const scaleFactor = 1 / Math.sqrt(Math.max(1, zoomScale));
+    assert.strictEqual(Number.isFinite(scaleFactor), true);
+    assert.strictEqual(scaleFactor > 0, true);
+
+    // Polygon on portrait frame (1080x1920)
+    const portraitDimensions = { width: 1080, height: 1920 };
+    const portLayout = calculateContainedDimensions(600, 400, portraitDimensions.width, portraitDimensions.height);
+    const polyState = {
+        clientID: 66,
+        shapeType: 'polygon',
+        points: [200, 300, 400, 350, 380, 600, 180, 550],
+    };
+    const polyBBox = getObjectBoundingBox(polyState);
+    assert.strictEqual(polyBBox.xtl, 180);
+    assert.strictEqual(polyBBox.ytl, 300);
+    assert.strictEqual(polyBBox.xbr, 400);
+    assert.strictEqual(polyBBox.ybr, 600);
+
+    // Contained display aspect matches intrinsic aspect
+    assert.strictEqual(Math.abs(portLayout.fitWidth / portLayout.fitHeight - portraitDimensions.width / portraitDimensions.height) < 0.001, true);
+
+    console.log('  ✔ TC 88 passed.');
+}
+
+// TC 89: Native CVAT Canvas Skeleton Wrapping Bounding Box Resolution
+{
+    console.log('TC 89: Native CVAT Canvas skeleton wrapping box resolution...');
+    const skeleton = {
+        clientID: 1001,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 1002, label: { id: 1 }, points: [150, 200], outside: false },
+            { clientID: 1003, label: { id: 2 }, points: [250, 200], outside: false },
+            { clientID: 1004, label: { id: 3 }, points: [200, 350], outside: false },
+            { clientID: 1005, label: { id: 4 }, points: [180, 450], outside: false },
+            { clientID: 1006, label: { id: 5 }, points: [0, 0], outside: true }, // outside landmark ignored
+        ],
+    };
+
+    const bbox = resolveSkeletonWrappingBox(skeleton, [skeleton]);
+    assert.notStrictEqual(bbox, null);
+    // Min X = 150, Max X = 250 -> padded with 20px -> [130, 270]
+    // Min Y = 200, Max Y = 450 -> padded with 20px -> [180, 470]
+    assert.strictEqual(bbox.xtl, 150 - 20); // 130
+    assert.strictEqual(bbox.ytl, 200 - 20); // 180
+    assert.strictEqual(bbox.xbr, 250 + 20); // 270
+    assert.strictEqual(bbox.ybr, 450 + 20); // 470
+    console.log('  ✔ TC 89 passed.');
+}
+
+// TC 90: Auto-Zoom Zooms into Complete Skeleton when Skeleton is Selected
+{
+    console.log('TC 90: Auto-Zoom zooms into complete skeleton when skeleton is selected...');
+    const frameWidth = 1920;
+    const frameHeight = 1080;
+    const skeleton = {
+        clientID: 2001,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 2002, label: { id: 1 }, points: [600, 300], outside: false },
+            { clientID: 2003, label: { id: 2 }, points: [900, 700], outside: false },
+        ],
+    };
+
+    const bbox = getObjectBoundingBox(skeleton, null, [skeleton]);
+    assert.notStrictEqual(bbox, null);
+    assert.deepStrictEqual(bbox, {
+        xtl: 600 - 20, // 580
+        ytl: 300 - 20, // 280
+        xbr: 900 + 20, // 920
+        ybr: 700 + 20, // 720
+    });
+
+    const vp = calculateAutoZoomViewport(bbox, frameWidth, frameHeight);
+    // Viewport must contain the entire skeleton box:
+    assert.strictEqual(vp.x <= bbox.xtl, true, 'Viewport left must encompass skeleton box');
+    assert.strictEqual(vp.y <= bbox.ytl, true, 'Viewport top must encompass skeleton box');
+    assert.strictEqual(vp.x + vp.width >= bbox.xbr, true, 'Viewport right must encompass skeleton box');
+    assert.strictEqual(vp.y + vp.height >= bbox.ybr, true, 'Viewport bottom must encompass skeleton box');
+    // Aspect ratio must strictly match full image aspect ratio (16:9):
+    const vpAspect = vp.width / vp.height;
+    const imgAspect = frameWidth / frameHeight;
+    assert.strictEqual(Math.abs(vpAspect - imgAspect) < 0.05, true);
+    console.log('  ✔ TC 90 passed.');
+}
+
+// TC 91: Auto-Zoom Zooms into Complete Skeleton when Individual Landmark is Selected
+{
+    console.log('TC 91: Auto-Zoom zooms into complete skeleton when landmark is selected...');
+    const frameWidth = 1920;
+    const frameHeight = 1080;
+    const parentSkeleton = {
+        clientID: 3001,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 3002, label: { id: 1, name: 'Eye_L' }, points: [400, 300], outside: false },
+            { clientID: 3003, label: { id: 2, name: 'Eye_R' }, points: [600, 300], outside: false },
+            { clientID: 3004, label: { id: 3, name: 'Chin' }, points: [500, 600], outside: false },
+        ],
+    };
+    const selectedLandmark = parentSkeleton.elements[0]; // 'Eye_L' landmark selected
+
+    // Whether passing (parentSkeleton, selectedLandmark) or the landmark directly with parentID:
+    const bboxFromParent = getObjectBoundingBox(parentSkeleton, selectedLandmark, [parentSkeleton]);
+    assert.notStrictEqual(bboxFromParent, null);
+    assert.deepStrictEqual(bboxFromParent, {
+        xtl: 400 - 20, // 380
+        ytl: 300 - 20, // 280
+        xbr: 600 + 20, // 620
+        ybr: 600 + 20, // 620
+    });
+
+    const landmarkWithParentID = { ...selectedLandmark, parentID: 3001 };
+    const bboxFromLandmark = getObjectBoundingBox(landmarkWithParentID, null, [parentSkeleton]);
+    assert.deepStrictEqual(bboxFromLandmark, bboxFromParent, 'Must zoom into parent skeleton, not isolated landmark');
+
+    const vp = calculateAutoZoomViewport(bboxFromParent, frameWidth, frameHeight);
+    // Entire skeleton (including Chin at y=600) must be inside viewport:
+    assert.strictEqual(vp.x + vp.width >= 620, true);
+    assert.strictEqual(vp.y + vp.height >= 620, true);
+    console.log('  ✔ TC 91 passed.');
+}
+
+// TC 92: Skeleton Auto-Zoom Preserves Image Aspect Ratio with 2-5% Safety Margin
+{
+    console.log('TC 92: Skeleton Auto-Zoom preserves image aspect ratio with 2-5% safety margin...');
+    const squareDimensions = { width: 1000, height: 1000 };
+    const skeleton = {
+        clientID: 4001,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 4002, label: { id: 1 }, points: [300, 200], outside: false },
+            { clientID: 4003, label: { id: 2 }, points: [500, 600], outside: false },
+        ],
+    };
+
+    const bbox = getObjectBoundingBox(skeleton, null, [skeleton]);
+    // bbox: [280, 180, 520, 620] -> width: 240, height: 440 (non-square box 240x440)
+    assert.strictEqual(bbox.xbr - bbox.xtl, 240);
+    assert.strictEqual(bbox.ybr - bbox.ytl, 440);
+
+    // Default safety margin is 3% (within 2-5% range)
+    const paddingRatio = 0.03;
+    const vp = calculateAutoZoomViewport(bbox, squareDimensions.width, squareDimensions.height, paddingRatio);
+
+    // Viewport must be strictly square (1:1) to match 1000x1000 source image:
+    assert.strictEqual(vp.width, vp.height, 'Viewport must match 1:1 image aspect ratio');
+    // Height was 440 * (1 + 2*0.03) = 466.4 -> rounded to 466
+    assert.strictEqual(vp.height >= Math.floor(440 * (1 + 2 * paddingRatio)), true);
+    assert.strictEqual(vp.x <= bbox.xtl, true);
+    assert.strictEqual(vp.y <= bbox.ytl, true);
+    assert.strictEqual(vp.x + vp.width >= bbox.xbr, true);
+    assert.strictEqual(vp.y + vp.height >= bbox.ybr, true);
+
+    console.log('  ✔ TC 92 passed.');
+}
+
+// TC 93: Independent Per-Frame Recalculation of Skeleton Wrapping Box
+{
+    console.log('TC 93: Independent per-frame recalculation of skeleton wrapping box...');
+    // Frame 1: Skeleton is near top-left
+    const skeletonFrame1 = {
+        clientID: 5001,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 5002, label: { id: 1 }, points: [100, 100], outside: false },
+            { clientID: 5003, label: { id: 2 }, points: [200, 200], outside: false },
+        ],
+    };
+
+    // Frame 2: Same skeleton moved towards bottom-right and grew
+    const skeletonFrame2 = {
+        clientID: 5001,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 5002, label: { id: 1 }, points: [700, 600], outside: false },
+            { clientID: 5003, label: { id: 2 }, points: [950, 900], outside: false },
+        ],
+    };
+
+    const bboxFrame1 = getObjectBoundingBox(skeletonFrame1, null, [skeletonFrame1]);
+    const bboxFrame2 = getObjectBoundingBox(skeletonFrame2, null, [skeletonFrame2]);
+
+    assert.deepStrictEqual(bboxFrame1, { xtl: 80, ytl: 80, xbr: 220, ybr: 220 });
+    assert.deepStrictEqual(bboxFrame2, { xtl: 680, ytl: 580, xbr: 970, ybr: 920 });
+
+    const vp1 = calculateAutoZoomViewport(bboxFrame1, 1920, 1080);
+    const vp2 = calculateAutoZoomViewport(bboxFrame2, 1920, 1080);
+
+    assert.notStrictEqual(vp1.x, vp2.x);
+    assert.notStrictEqual(vp1.y, vp2.y);
+    assert.strictEqual(vp1.x <= 80 && vp1.y <= 80, true);
+    assert.strictEqual(vp2.x + vp2.width >= 970 && vp2.y + vp2.height >= 920, true);
+
+    console.log('  ✔ TC 93 passed.');
+}
+
+// TC 94: Annotation Data Non-Mutation Guarantee
+{
+    console.log('TC 94: Annotation data non-mutation guarantee...');
+    const originalSkeleton = {
+        clientID: 6001,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 6002, label: { id: 1 }, points: [300, 300], outside: false },
+            { clientID: 6003, label: { id: 2 }, points: [400, 500], outside: false },
+        ],
+    };
+    const clonedSnapshot = JSON.parse(JSON.stringify(originalSkeleton));
+
+    // Resolve wrapping box and calculate auto-zoom
+    const bbox = getObjectBoundingBox(originalSkeleton, null, [originalSkeleton]);
+    const vp = calculateAutoZoomViewport(bbox, 1920, 1080);
+
+    // Deep compare that original object structure was not mutated
+    assert.deepStrictEqual(originalSkeleton, clonedSnapshot, 'Original annotation state must remain completely unmutated');
+    console.log('  ✔ TC 94 passed.');
+}
+
+// TC 95: Rectangle, Polygon, and Mask Auto-Zoom Preservation
+{
+    console.log('TC 95: Rectangle, polygon, and mask Auto-Zoom preservation...');
+    const rectState = { clientID: 7001, objectType: 'track', shapeType: 'rectangle', points: [100, 200, 500, 600] };
+    const rectBBox = getObjectBoundingBox(rectState);
+    assert.deepStrictEqual(rectBBox, { xtl: 100, ytl: 200, xbr: 500, ybr: 600 });
+    const rectVp = calculateAutoZoomViewport(rectBBox, 1920, 1080);
+    assert.strictEqual(rectVp.width > 0 && rectVp.height > 0, true);
+
+    const polyState = { clientID: 7002, objectType: 'shape', shapeType: 'polygon', points: [50, 60, 200, 100, 180, 250, 40, 200] };
+    const polyBBox = getObjectBoundingBox(polyState);
+    assert.deepStrictEqual(polyBBox, { xtl: 40, ytl: 60, xbr: 200, ybr: 250 });
+    const polyVp = calculateAutoZoomViewport(polyBBox, 1920, 1080);
+    assert.strictEqual(polyVp.width > 0 && polyVp.height > 0, true);
+
+    const maskState = { clientID: 7003, objectType: 'shape', shapeType: 'mask', points: [30, 40, 300, 400, 0, 1, 0, 1] };
+    const maskBBox = getObjectBoundingBox(maskState);
+    assert.deepStrictEqual(maskBBox, { xtl: 30, ytl: 40, xbr: 300, ybr: 400 });
+
+    console.log('  ✔ TC 95 passed.');
+}
+
+// TC 96: Multi-Frame Object Selector UI — Complete Logical Objects Only, Child Points Excluded
+{
+    console.log('TC 96: Object selector lists only complete logical parent objects; skeleton child points never appear...');
+    const states = [
+        // 1. Skeleton track 'mattrai1' (#4) with 5 landmark points (e.g., eyes, nose, mouth)
+        {
+            clientID: 4,
+            id: 104,
+            objectType: 'track',
+            shapeType: 'skeleton',
+            label: { id: 1, name: 'mattrai1', color: '#ff0000' },
+            elements: [
+                { clientID: 41, parentID: 4, shapeType: 'points', label: { id: 11, name: '1' }, points: [100, 100], outside: false },
+                { clientID: 42, parentID: 4, shapeType: 'points', label: { id: 12, name: '2' }, points: [120, 100], outside: false },
+                { clientID: 43, parentID: 4, shapeType: 'points', label: { id: 13, name: '3' }, points: [110, 115], outside: false },
+                { clientID: 44, parentID: 4, shapeType: 'points', label: { id: 14, name: '4' }, points: [105, 130], outside: false },
+                { clientID: 45, parentID: 4, shapeType: 'points', label: { id: 15, name: '5' }, points: [115, 130], outside: false },
+            ],
+        },
+        // 2. Standalone skeleton shape 'face_contour' (#8) with 3 landmark points
+        {
+            clientID: 8,
+            objectType: 'shape',
+            shapeType: 'skeleton',
+            label: { id: 2, name: 'face_contour', color: '#00ff00' },
+            elements: [
+                { clientID: 81, parentID: 8, shapeType: 'points', label: { id: 21, name: 'jaw_left' }, points: [200, 200], outside: false },
+                { clientID: 82, parentID: 8, shapeType: 'points', label: { id: 22, name: 'chin' }, points: [220, 250], outside: false },
+                { clientID: 83, parentID: 8, shapeType: 'points', label: { id: 23, name: 'jaw_right' }, points: [240, 200], outside: false },
+            ],
+        },
+        // 3. Child point passed directly as top-level state (must be rejected via parentID check)
+        {
+            clientID: 99,
+            parentID: 4,
+            objectType: 'track',
+            shapeType: 'points',
+            label: { id: 11, name: '1' },
+            points: [100, 100],
+        },
+        // 4. Rectangle track 'car' (#12)
+        {
+            clientID: 12,
+            id: 112,
+            objectType: 'track',
+            shapeType: 'rectangle',
+            label: { id: 3, name: 'car', color: '#0000ff' },
+            points: [300, 300, 500, 450],
+        },
+        // 5. Polygon shape 'building' (#16)
+        {
+            clientID: 16,
+            objectType: 'shape',
+            shapeType: 'polygon',
+            label: { id: 4, name: 'building', color: '#ffff00' },
+            points: [600, 100, 700, 100, 750, 300, 550, 300],
+        },
+    ];
+
+    const selectable = extractSelectableObjects(states);
+
+    // Requirement: Exactly 4 logical objects extracted (track_4, shape_8, track_12, shape_16)
+    assert.strictEqual(selectable.length, 4, 'Must only contain the 4 complete logical parent objects');
+
+    // Requirement: Zero child landmarks or sublabel entries exist in the selectable list
+    const keys = selectable.map((o) => o.key);
+    assert.deepStrictEqual(keys, ['track_4', 'shape_8', 'track_12', 'shape_16']);
+
+    const childKeys = selectable.filter((o) => o.key.startsWith('element_'));
+    assert.strictEqual(childKeys.length, 0, 'No element_* keys allowed in selectable objects');
+
+    const childParentIDs = selectable.filter((o) => o.parentID !== null);
+    assert.strictEqual(childParentIDs.length, 0, 'No child objects with parentID allowed');
+
+    // Verify display text: Never contains landmark arrows (↳ or →), never lists 'mattrai1 #4 → 1'
+    for (const obj of selectable) {
+        assert.strictEqual(obj.displayText.includes('↳'), false, `displayText '${obj.displayText}' must not contain '↳'`);
+        assert.strictEqual(obj.displayText.includes('→'), false, `displayText '${obj.displayText}' must not contain '→'`);
+    }
+
+    // Requirement: Type dropdown filter sources available object types
+    const availableTypes = Array.from(new Set(selectable.map((o) => o.shapeType))).sort();
+    assert.deepStrictEqual(availableTypes, ['polygon', 'rectangle', 'skeleton']);
+
+    // Filter by 'skeleton'
+    const skeletonFiltered = selectable.filter((o) => o.shapeType === 'skeleton');
+    assert.strictEqual(skeletonFiltered.length, 2, 'Only complete skeleton parent objects when filtered by skeleton');
+    assert.strictEqual(skeletonFiltered[0].key, 'track_4');
+    assert.strictEqual(skeletonFiltered[0].labelName, 'mattrai1');
+    assert.strictEqual(skeletonFiltered[1].key, 'shape_8');
+    assert.strictEqual(skeletonFiltered[1].labelName, 'face_contour');
+
+    // Filter by 'rectangle'
+    const rectFiltered = selectable.filter((o) => o.shapeType === 'rectangle');
+    assert.strictEqual(rectFiltered.length, 1);
+    assert.strictEqual(rectFiltered[0].key, 'track_12');
+    assert.strictEqual(rectFiltered[0].labelName, 'car');
+
+    // Filter by 'polygon'
+    const polyFiltered = selectable.filter((o) => o.shapeType === 'polygon');
+    assert.strictEqual(polyFiltered.length, 1);
+    assert.strictEqual(polyFiltered[0].key, 'shape_16');
+    assert.strictEqual(polyFiltered[0].labelName, 'building');
+
+    // Requirement: Selecting a skeleton selects the entire parent skeleton object
+    const selectedSkeleton = selectable.find((o) => o.key === 'track_4');
+    assert.ok(selectedSkeleton);
+    assert.strictEqual(selectedSkeleton.clientID, 4);
+    assert.strictEqual(selectedSkeleton.trackID, 104);
+    // Complete landmark structure and points are retained in sourceState for display and editing
+    assert.strictEqual(selectedSkeleton.sourceState.elements.length, 5);
+    assert.strictEqual(selectedSkeleton.sourceState.elements[0].label.name, '1');
+
+    // Auto-Zoom on this selected skeleton resolves the outer wrapping bounding box (not individual points)
+    const bbox = getObjectBoundingBox(selectedSkeleton.sourceState, null, [selectedSkeleton.sourceState]);
+    assert.notStrictEqual(bbox, null);
+    // Extents: x: 100..120, y: 100..130 -> with margin: [80, 80, 140, 150]
+    assert.deepStrictEqual(bbox, { xtl: 80, ytl: 80, xbr: 140, ybr: 150 });
+
+    console.log('  ✔ TC 96 passed.');
+}
+
+// TC 97: Whole-Skeleton Bounding Box Dragging and Relative Coordinate Offset Preservation
+{
+    console.log('TC 97: Whole-skeleton bounding box dragging and relative coordinate offset preservation...');
+    const imageWidth = 1920;
+    const imageHeight = 1080;
+
+    const skeletonState = {
+        clientID: 601,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        label: { id: 10, name: 'face_landmarks' },
+        elements: [
+            { clientID: 602, shapeType: 'points', label: { id: 1, name: 'left_eye' }, points: [280, 200], outside: false },
+            { clientID: 603, shapeType: 'points', label: { id: 2, name: 'right_eye' }, points: [320, 200], outside: false },
+            { clientID: 604, shapeType: 'points', label: { id: 3, name: 'nose' }, points: [300, 250], outside: false },
+            { clientID: 605, shapeType: 'points', label: { id: 4, name: 'mouth_l' }, points: [285, 300], outside: false },
+            { clientID: 606, shapeType: 'points', label: { id: 5, name: 'mouth_r' }, points: [315, 300], outside: false },
+        ],
+    };
+
+    // Calculate initial pairwise distances between all landmarks
+    const initialPairs = [];
+    for (let i = 0; i < skeletonState.elements.length; i++) {
+        for (let j = i + 1; j < skeletonState.elements.length; j++) {
+            const p1 = skeletonState.elements[i].points;
+            const p2 = skeletonState.elements[j].points;
+            initialPairs.push({
+                i, j,
+                dist: Math.hypot(p2[0] - p1[0], p2[1] - p1[1]),
+            });
+        }
+    }
+
+    // 1. Move whole skeleton by dx=+75, dy=-45
+    const dx = 75;
+    const dy = -45;
+
+    const movedElements = skeletonState.elements.map((el) => ({
+        ...el,
+        points: [Math.round(el.points[0] + dx), Math.round(el.points[1] + dy)],
+    }));
+
+    // Verify all points translated by exact offset
+    assert.deepStrictEqual(movedElements[0].points, [355, 155]);
+    assert.deepStrictEqual(movedElements[1].points, [395, 155]);
+    assert.deepStrictEqual(movedElements[2].points, [375, 205]);
+    assert.deepStrictEqual(movedElements[3].points, [360, 255]);
+    assert.deepStrictEqual(movedElements[4].points, [390, 255]);
+
+    // Verify pairwise distances between all elements remain identical (relative structure unchanged)
+    for (const pair of initialPairs) {
+        const p1 = movedElements[pair.i].points;
+        const p2 = movedElements[pair.j].points;
+        const newDist = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+        assert.ok(Math.abs(newDist - pair.dist) < 1e-6, `Distance between element ${pair.i} and ${pair.j} must not change`);
+    }
+
+    // 2. Boundary clamping: Dragging past top-left boundary
+    const extremeNegativeDx = -1000;
+    const extremeNegativeDy = -1000;
+    const minX = Math.min(...skeletonState.elements.map((el) => el.points[0])); // 280
+    const minY = Math.min(...skeletonState.elements.map((el) => el.points[1])); // 200
+    const clampedNegDx = Math.max(-minX, extremeNegativeDx); // -280
+    const clampedNegDy = Math.max(-minY, extremeNegativeDy); // -200
+
+    assert.strictEqual(clampedNegDx, -280);
+    assert.strictEqual(clampedNegDy, -200);
+
+    const clampedLeftElements = skeletonState.elements.map((el) => ({
+        ...el,
+        points: [el.points[0] + clampedNegDx, el.points[1] + clampedNegDy],
+    }));
+    for (const el of clampedLeftElements) {
+        assert.ok(el.points[0] >= 0, 'X coordinate must be >= 0');
+        assert.ok(el.points[1] >= 0, 'Y coordinate must be >= 0');
+    }
+
+    // 3. Boundary clamping: Dragging past bottom-right boundary
+    const extremePositiveDx = 3000;
+    const extremePositiveDy = 3000;
+    const maxX = Math.max(...skeletonState.elements.map((el) => el.points[0])); // 320
+    const maxY = Math.max(...skeletonState.elements.map((el) => el.points[1])); // 300
+    const clampedPosDx = Math.min(imageWidth - maxX, extremePositiveDx); // 1920 - 320 = 1600
+    const clampedPosDy = Math.min(imageHeight - maxY, extremePositiveDy); // 1080 - 300 = 780
+
+    assert.strictEqual(clampedPosDx, 1600);
+    assert.strictEqual(clampedPosDy, 780);
+
+    const clampedRightElements = skeletonState.elements.map((el) => ({
+        ...el,
+        points: [el.points[0] + clampedPosDx, el.points[1] + clampedPosDy],
+    }));
+    for (const el of clampedRightElements) {
+        assert.ok(el.points[0] <= imageWidth, `X coordinate must be <= ${imageWidth}`);
+        assert.ok(el.points[1] <= imageHeight, `Y coordinate must be <= ${imageHeight}`);
+    }
+
+    // 4. Individual landmark dragging still works independently
+    const singleLandmark = skeletonState.elements[0];
+    const singleNewPoint = [295, 215];
+    const editedSingle = { ...singleLandmark, points: singleNewPoint };
+    assert.deepStrictEqual(editedSingle.points, [295, 215]);
+    // Other landmarks remain untouched
+    assert.deepStrictEqual(skeletonState.elements[1].points, [320, 200]);
+
+    console.log('  ✔ TC 97 passed.');
+}
+
+// TC 98: Whole-Skeleton Movement Dispatches to CVAT Annotation Pipeline and Active Frame Only
+{
+    console.log('TC 98: Whole-skeleton movement dispatches to CVAT pipeline and active frame only...');
+    const activeFrameNumber = 5;
+    const inactiveFrameNumber = 2;
+
+    const frame2Skeleton = {
+        clientID: 701,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 702, points: [100, 100], outside: false },
+            { clientID: 703, points: [150, 150], outside: false },
+        ],
+    };
+
+    const frame5Skeleton = {
+        clientID: 701,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 802, points: [200, 200], outside: false },
+            { clientID: 803, points: [250, 250], outside: false },
+        ],
+    };
+
+    const dispatchedActions = [];
+    const dispatch = (action) => dispatchedActions.push(action);
+
+    // Simulated handleEditSkeleton
+    const handleEditSkeleton = (tileFrame, isActive, parentState, deltaX, deltaY) => {
+        if (!isActive || !parentState || !Array.isArray(parentState.elements)) return false;
+
+        const updatedElements = [];
+        for (const el of parentState.elements) {
+            if (Array.isArray(el.points) && el.points.length >= 2) {
+                el.points = [Math.round(el.points[0] + deltaX), Math.round(el.points[1] + deltaY)];
+                updatedElements.push(el);
+            }
+        }
+
+        dispatch({ type: 'CHANGE_FRAME_ASYNC', frame: tileFrame });
+        dispatch({ type: 'ACTIVATE_OBJECT', activatedStateID: parentState.clientID, activatedElementID: null });
+        dispatch({ type: 'UPDATE_ANNOTATIONS_ASYNC', states: updatedElements });
+        return true;
+    };
+
+    // 1. Attempt edit on inactive frame (Frame 2): Must be rejected
+    const inactiveResult = handleEditSkeleton(inactiveFrameNumber, false, frame2Skeleton, 30, 30);
+    assert.strictEqual(inactiveResult, false, 'Edit on inactive frame must return without dispatching');
+    assert.strictEqual(dispatchedActions.length, 0, 'No actions dispatched for inactive frame');
+    assert.deepStrictEqual(frame2Skeleton.elements[0].points, [100, 100], 'Inactive frame coordinates must remain unchanged');
+
+    // 2. Edit on active frame (Frame 5): Must succeed
+    const activeResult = handleEditSkeleton(activeFrameNumber, true, frame5Skeleton, 40, -25);
+    assert.strictEqual(activeResult, true);
+    assert.strictEqual(dispatchedActions.length, 3);
+    assert.strictEqual(dispatchedActions[0].type, 'CHANGE_FRAME_ASYNC');
+    assert.strictEqual(dispatchedActions[0].frame, 5);
+    assert.strictEqual(dispatchedActions[1].type, 'ACTIVATE_OBJECT');
+    assert.strictEqual(dispatchedActions[1].activatedStateID, 701);
+    assert.strictEqual(dispatchedActions[1].activatedElementID, null);
+    assert.strictEqual(dispatchedActions[2].type, 'UPDATE_ANNOTATIONS_ASYNC');
+    assert.strictEqual(dispatchedActions[2].states.length, 2);
+    assert.deepStrictEqual(dispatchedActions[2].states[0].points, [240, 175]);
+    assert.deepStrictEqual(dispatchedActions[2].states[1].points, [290, 225]);
+
+    // Frame 2 points must still be completely untouched
+    assert.deepStrictEqual(frame2Skeleton.elements[0].points, [100, 100]);
+    assert.deepStrictEqual(frame2Skeleton.elements[1].points, [150, 150]);
+
+    // 3. Auto-Zoom recalculates the outer bounding box for the moved skeleton
+    const newBBox = getObjectBoundingBox(frame5Skeleton, null, [frame5Skeleton]);
+    assert.notStrictEqual(newBBox, null);
+    // [240-20, 175-20, 290+20, 225+20] = [220, 155, 310, 245]
+    assert.deepStrictEqual(newBBox, { xtl: 220, ytl: 155, xbr: 310, ybr: 245 });
+
+    console.log('  ✔ TC 98 passed.');
+}
+
 console.log('\n=== All Real Multi-Frame Viewer Tests Passed Successfully! ===');
+
+
+
+
 

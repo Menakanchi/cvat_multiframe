@@ -284,6 +284,7 @@ export interface SelectableObject {
     clientID: number;
     parentID: number | null;
     trackID?: number;
+    sublabelID?: number;
     labelID?: number;
     labelName: string;
     shapeType: string;
@@ -347,12 +348,124 @@ export function parseBBox(val: any): BBox | null {
  * existing defined bounding box. We do NOT derive or synthesize a replacement
  * bounding box from skeleton keypoints or individual body landmarks.
  */
+export const SKELETON_RECT_MARGIN = 20;
+
+/**
+ * Resolves a skeleton's outer wrapping bounding box using native CVAT Canvas logic.
+ * Reuses the native CVAT Canvas logic (cvat-canvas/src/typescript/canvasView.ts lines 3890-4035):
+ * 1. Checks for existing defined bounding box / wrappingRect on the skeleton.
+ * 2. Checks for associated bounding box rectangle in the frame's annotation states.
+ * 3. Otherwise computes the native CVAT Canvas wrapping bounding box from visible elements
+ *    with standard SKELETON_RECT_MARGIN = 20 applied.
+ * Recalculated independently per frame without modifying annotation data.
+ */
+export function resolveSkeletonWrappingBox(
+    skeletonState: any,
+    allFrameStates?: any[],
+): BBox | null {
+    if (!skeletonState) return null;
+
+    // 1. Direct explicit bounding box / wrappingRect on skeletonState
+    const directBox =
+        parseBBox(skeletonState.wrappingRect) ||
+        parseBBox(skeletonState.boundingBox) ||
+        parseBBox(skeletonState.bbox) ||
+        parseBBox(skeletonState.rect) ||
+        parseBBox(skeletonState.box) ||
+        parseBBox(skeletonState.bounds);
+    if (directBox) {
+        return directBox;
+    }
+
+    if (Array.isArray(skeletonState.points) && skeletonState.points.length === 4) {
+        return parseBBox(skeletonState.points);
+    }
+
+    // 2. Look up associated bounding box rectangle in frame annotations
+    if (Array.isArray(allFrameStates) && allFrameStates.length > 0) {
+        const targetClientID = skeletonState.clientID;
+        const targetGroupID = skeletonState.group?.id;
+
+        const associatedRect = allFrameStates.find((st: any) => {
+            if (!st || st.outside || st.shapeType !== 'rectangle') return false;
+            if (typeof targetClientID === 'number' && st.clientID === targetClientID) return true;
+            if (typeof targetClientID === 'number' && st.parentID === targetClientID) return true;
+            if (typeof skeletonState.parentID === 'number' && st.clientID === skeletonState.parentID) return true;
+            if (typeof targetGroupID === 'number' && targetGroupID > 0 && st.group?.id === targetGroupID) return true;
+            return false;
+        });
+
+        if (associatedRect) {
+            const rectBox =
+                parseBBox(associatedRect.boundingBox) ||
+                parseBBox(associatedRect.bbox) ||
+                parseBBox(associatedRect.points);
+            if (rectBox) {
+                return rectBox;
+            }
+        }
+    }
+
+    // 3. Native CVAT Canvas wrapping box calculation (cvat-canvas canvasView.ts addSkeleton)
+    if (Array.isArray(skeletonState.elements) && skeletonState.elements.length > 0) {
+        let xtl: number | null = null;
+        let ytl: number | null = null;
+        let xbr: number | null = null;
+        let ybr: number | null = null;
+
+        for (const element of skeletonState.elements) {
+            if (!element || element.outside) continue;
+            const pts = element.points;
+            if (Array.isArray(pts) && pts.length >= 2) {
+                const cx = pts[0];
+                const cy = pts[1];
+                if (Number.isFinite(cx) && Number.isFinite(cy)) {
+                    xtl = xtl === null ? cx : Math.min(xtl, cx);
+                    ytl = ytl === null ? cy : Math.min(ytl, cy);
+                    xbr = xbr === null ? cx : Math.max(xbr, cx);
+                    ybr = ybr === null ? cy : Math.max(ybr, cy);
+                }
+            }
+        }
+
+        if (xtl !== null && ytl !== null && xbr !== null && ybr !== null) {
+            return {
+                xtl: Math.round(xtl - SKELETON_RECT_MARGIN),
+                ytl: Math.round(ytl - SKELETON_RECT_MARGIN),
+                xbr: Math.round(xbr + SKELETON_RECT_MARGIN),
+                ybr: Math.round(ybr + SKELETON_RECT_MARGIN),
+            };
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Retrieves the object's bounding box from CVAT annotation data.
+ * For skeletons and skeleton landmarks, reuses the native CVAT Canvas logic
+ * to resolve the complete skeleton's outer wrapping bounding box (never zooming into a single landmark).
+ * Keeps rectangle, polygon, and other geometry Auto-Zoom fully functional.
+ */
 export function getObjectBoundingBox(
     targetState: any,
     targetElementState?: any,
     allFrameStates?: any[],
 ): BBox | null {
     if (!targetState) return null;
+
+    // Skeletons: always resolve complete skeleton outer wrapping bounding box
+    if (targetState.shapeType === 'skeleton' || (targetState.elements && Array.isArray(targetState.elements))) {
+        return resolveSkeletonWrappingBox(targetState, allFrameStates);
+    }
+
+    // If targetState is a landmark whose parent is a skeleton in allFrameStates, zoom into the complete skeleton
+    if (targetState.parentID !== null && targetState.parentID !== undefined && Array.isArray(allFrameStates)) {
+        const parentSkeleton = allFrameStates.find((st: any) => st && st.clientID === targetState.parentID);
+        if (parentSkeleton && parentSkeleton.shapeType === 'skeleton') {
+            return resolveSkeletonWrappingBox(parentSkeleton, allFrameStates);
+        }
+    }
 
     // 1. Direct explicit bounding box properties on targetState
     const directBox =
@@ -376,9 +489,9 @@ export function getObjectBoundingBox(
         };
     }
 
-    // 3. Direct points if targetState is a skeleton or track with 4 bounding box coordinates
+    // 3. Direct points if targetState has 4 bounding box coordinates
     if (
-        (targetState.shapeType === 'skeleton' || targetState.objectType === 'track') &&
+        targetState.objectType === 'track' &&
         Array.isArray(targetState.points) &&
         targetState.points.length === 4
     ) {
@@ -391,11 +504,10 @@ export function getObjectBoundingBox(
         };
     }
 
-    // 4. Look up associated bounding box rectangle in frame annotations (e.g. skeleton linked with box)
+    // 4. Look up associated bounding box rectangle in frame annotations (e.g. linked by group.id)
     if (Array.isArray(allFrameStates) && allFrameStates.length > 0) {
         const targetClientID = targetState.clientID;
         const targetGroupID = targetState.group?.id;
-        const targetTrackID = typeof targetState.id === 'number' ? targetState.id : undefined;
 
         const associatedRect = allFrameStates.find((st: any) => {
             if (!st || st.outside || st.shapeType !== 'rectangle') return false;
@@ -403,7 +515,6 @@ export function getObjectBoundingBox(
             if (typeof targetClientID === 'number' && st.parentID === targetClientID) return true;
             if (typeof targetState.parentID === 'number' && st.clientID === targetState.parentID) return true;
             if (typeof targetGroupID === 'number' && targetGroupID > 0 && st.group?.id === targetGroupID) return true;
-            if (typeof targetTrackID === 'number' && st.id === targetTrackID) return true;
             return false;
         });
 
@@ -418,13 +529,7 @@ export function getObjectBoundingBox(
         }
     }
 
-    // 5. If targetState is a skeleton and has no defined bounding box, do NOT derive from skeleton landmarks
-    if (targetState.shapeType === 'skeleton') {
-        return null;
-    }
-
-    // 6. Other standalone geometry types (masks, ellipses, polygons, polylines, cuboids)
-    // Mask: [xtl, ytl, xbr, ybr, ...]
+    // 5. Masks: [xtl, ytl, xbr, ybr, ...]
     if (targetState.shapeType === 'mask' && Array.isArray(targetState.points) && targetState.points.length >= 4) {
         const [xtl, ytl, xbr, ybr] = targetState.points;
         return {
@@ -435,7 +540,7 @@ export function getObjectBoundingBox(
         };
     }
 
-    // Ellipse: [cx, cy, rightX, topY]
+    // 6. Ellipse: [cx, cy, rightX, topY]
     if (targetState.shapeType === 'ellipse' && Array.isArray(targetState.points) && targetState.points.length >= 4) {
         const [cx, cy, rightX, topY] = targetState.points;
         const rx = Math.abs(rightX - cx);
@@ -448,7 +553,7 @@ export function getObjectBoundingBox(
         };
     }
 
-    // Standalone Polygons, Polylines, Points, Cuboids (non-skeleton):
+    // 7. Standalone Polygons, Polylines, Points, Cuboids:
     if (Array.isArray(targetState.points) && targetState.points.length >= 2) {
         let minX = Infinity;
         let minY = Infinity;
@@ -541,11 +646,16 @@ export function calculateAutoZoomViewport(
         vpY = Math.max(0, imageHeight - vpHeight);
     }
 
+    const roundedWidth = Math.min(Math.round(vpWidth), imageWidth);
+    const roundedHeight = Math.min(Math.round(vpHeight), imageHeight);
+    const roundedX = Math.max(0, Math.min(Math.round(vpX), imageWidth - roundedWidth));
+    const roundedY = Math.max(0, Math.min(Math.round(vpY), imageHeight - roundedHeight));
+
     return {
-        x: Math.round(vpX),
-        y: Math.round(vpY),
-        width: Math.round(vpWidth),
-        height: Math.round(vpHeight),
+        x: roundedX,
+        y: roundedY,
+        width: roundedWidth,
+        height: roundedHeight,
     };
 }
 
@@ -570,11 +680,16 @@ export function clampViewport(vp: Viewport, imageWidth: number, imageHeight: num
     let x = Math.max(0, Math.min(vp.x, imageWidth - width));
     let y = Math.max(0, Math.min(vp.y, imageHeight - height));
 
+    const roundedWidth = Math.min(Math.round(width), imageWidth);
+    const roundedHeight = Math.min(Math.round(height), imageHeight);
+    const roundedX = Math.max(0, Math.min(Math.round(x), imageWidth - roundedWidth));
+    const roundedY = Math.max(0, Math.min(Math.round(y), imageHeight - roundedHeight));
+
     return {
-        x: Math.round(x),
-        y: Math.round(y),
-        width: Math.round(width),
-        height: Math.round(height),
+        x: roundedX,
+        y: roundedY,
+        width: roundedWidth,
+        height: roundedHeight,
     };
 }
 
@@ -641,9 +756,9 @@ export function calculateZoomPercentage(vp: Viewport, imageWidth: number): numbe
 /**
  * Extracts and deduplicates selectable objects from an array of AnnotationStates.
  * Supports:
- *  - Tracks of all shape types
- *  - Skeleton parent tracks and individual landmark elements
- *  - Standalone shapes (annotated on current frame)
+ *  - Tracks of all shape types (Skeleton, Rectangle, Polygon, etc.)
+ *  - Standalone shapes of all shape types
+ * Excludes individual child elements / landmarks so only complete logical objects appear in the Object selector.
  */
 export function extractSelectableObjects(states: any[]): SelectableObject[] {
     if (!Array.isArray(states) || states.length === 0) {
@@ -654,6 +769,11 @@ export function extractSelectableObjects(states: any[]): SelectableObject[] {
 
     for (const state of states) {
         if (!state) continue;
+
+        // Skip child elements/landmarks - only complete parent objects should be selectable
+        if (state.parentID !== undefined && state.parentID !== null) {
+            continue;
+        }
 
         const isTrack = state.objectType === 'track';
         const clientID = state.clientID;
@@ -667,6 +787,7 @@ export function extractSelectableObjects(states: any[]): SelectableObject[] {
         if (isTrack) {
             const trackKey = `track_${clientID}`;
             if (!objectsMap.has(trackKey)) {
+                const typeName = shapeType.charAt(0).toUpperCase() + shapeType.slice(1);
                 objectsMap.set(trackKey, {
                     key: trackKey,
                     clientID,
@@ -676,39 +797,15 @@ export function extractSelectableObjects(states: any[]): SelectableObject[] {
                     labelName,
                     shapeType,
                     objectType: 'track',
-                    displayText: `Track #${clientID}${state.id ? ` [ID ${state.id}]` : ''}: ${labelName} (${shapeType})`,
+                    displayText: `[#${clientID}${state.id ? ` / ID ${state.id}` : ''}] ${labelName} (${typeName} Track)`,
                     color,
                     sourceState: state,
                 });
             }
-
-            // If it's a skeleton track, also extract its landmark elements
-            if (shapeType === 'skeleton' && Array.isArray(state.elements)) {
-                for (const el of state.elements) {
-                    const elSublabelID = el.label?.id;
-                    const elSublabelName = el.label?.name || 'Landmark';
-                    const elKey = `element_${clientID}_${elSublabelID}`;
-
-                    if (!objectsMap.has(elKey)) {
-                        objectsMap.set(elKey, {
-                            key: elKey,
-                            clientID: el.clientID,
-                            parentID: clientID,
-                            sublabelID: elSublabelID,
-                            labelID: elSublabelID,
-                            labelName: elSublabelName,
-                            shapeType: el.shapeType || 'points',
-                            objectType: 'track',
-                            displayText: `  ↳ ${labelName} #${clientID} → ${elSublabelName}`,
-                            color: el.color || color,
-                            sourceState: el,
-                        });
-                    }
-                }
-            }
         } else if (state.objectType === 'shape') {
             const shapeKey = `shape_${clientID}`;
             if (!objectsMap.has(shapeKey)) {
+                const typeName = shapeType.charAt(0).toUpperCase() + shapeType.slice(1);
                 objectsMap.set(shapeKey, {
                     key: shapeKey,
                     clientID,
@@ -717,7 +814,7 @@ export function extractSelectableObjects(states: any[]): SelectableObject[] {
                     labelName,
                     shapeType,
                     objectType: 'shape',
-                    displayText: `Shape #${clientID}: ${labelName} (${shapeType})`,
+                    displayText: `[#${clientID}] ${labelName} (${typeName} Shape)`,
                     color,
                     sourceState: state,
                 });
@@ -726,4 +823,127 @@ export function extractSelectableObjects(states: any[]): SelectableObject[] {
     }
 
     return Array.from(objectsMap.values());
+}
+
+export interface ContainedLayout {
+    fitWidth: number;
+    fitHeight: number;
+    offsetX: number;
+    offsetY: number;
+    letterboxType: 'none' | 'letterbox' | 'pillarbox';
+    scale: number;
+}
+
+/**
+ * Calculates proportional containment (object-fit: contain) for content (image/viewport)
+ * inside a container, computing fitted dimensions, centering offsets, and letterboxing type.
+ *
+ * @param containerWidth Available width of the container in pixels
+ * @param containerHeight Available height of the container in pixels
+ * @param contentWidth Intrinsic or rendered width of the content in pixels
+ * @param contentHeight Intrinsic or rendered height of the content in pixels
+ */
+export function calculateContainedDimensions(
+    containerWidth: number,
+    containerHeight: number,
+    contentWidth: number,
+    contentHeight: number,
+): ContainedLayout {
+    if (containerWidth <= 0 || containerHeight <= 0 || contentWidth <= 0 || contentHeight <= 0) {
+        return {
+            fitWidth: Math.max(0, containerWidth),
+            fitHeight: Math.max(0, containerHeight),
+            offsetX: 0,
+            offsetY: 0,
+            letterboxType: 'none',
+            scale: 1,
+        };
+    }
+
+    const containerAspect = containerWidth / containerHeight;
+    const contentAspect = contentWidth / contentHeight;
+
+    let fitWidth: number;
+    let fitHeight: number;
+    let letterboxType: 'none' | 'letterbox' | 'pillarbox' = 'none';
+
+    if (Math.abs(containerAspect - contentAspect) < 0.001) {
+        fitWidth = containerWidth;
+        fitHeight = containerHeight;
+        letterboxType = 'none';
+    } else if (containerAspect > contentAspect) {
+        // Container is wider than content -> Pillarboxing (vertical bars on left & right)
+        fitHeight = containerHeight;
+        fitWidth = containerHeight * contentAspect;
+        letterboxType = 'pillarbox';
+    } else {
+        // Container is taller than content -> Letterboxing (horizontal bars on top & bottom)
+        fitWidth = containerWidth;
+        fitHeight = containerWidth / contentAspect;
+        letterboxType = 'letterbox';
+    }
+
+    fitWidth = Math.min(containerWidth, Math.max(1, fitWidth));
+    fitHeight = Math.min(containerHeight, Math.max(1, fitHeight));
+
+    const offsetX = Math.max(0, (containerWidth - fitWidth) / 2);
+    const offsetY = Math.max(0, (containerHeight - fitHeight) / 2);
+    const scale = contentWidth > 0 ? fitWidth / contentWidth : 1;
+
+    return {
+        fitWidth,
+        fitHeight,
+        offsetX,
+        offsetY,
+        letterboxType,
+        scale,
+    };
+}
+
+/**
+ * Maps a pointer event (clientX, clientY or container-relative x, y) to image coordinates,
+ * taking into account the letterbox/pillarbox offset, scale, and active viewport crop.
+ *
+ * @param pointerContainerX X coordinate relative to container left edge
+ * @param pointerContainerY Y coordinate relative to container top edge
+ * @param layout ContainedLayout computed for the container and content
+ * @param viewport Active viewport (or null for full frame)
+ * @param imageWidth Full frame width
+ * @param imageHeight Full frame height
+ */
+export function mapPointerToImageCoordinates(
+    pointerContainerX: number,
+    pointerContainerY: number,
+    layout: ContainedLayout,
+    viewport: Viewport | null,
+    imageWidth: number,
+    imageHeight: number,
+): { x: number; y: number; isInsideContent: boolean } {
+    const { fitWidth, fitHeight, offsetX, offsetY } = layout;
+
+    const isInsideContent =
+        pointerContainerX >= offsetX &&
+        pointerContainerX <= offsetX + fitWidth &&
+        pointerContainerY >= offsetY &&
+        pointerContainerY <= offsetY + fitHeight;
+
+    const contentRelX = Math.max(0, Math.min(fitWidth, pointerContainerX - offsetX));
+    const contentRelY = Math.max(0, Math.min(fitHeight, pointerContainerY - offsetY));
+
+    const vpX = viewport?.x ?? 0;
+    const vpY = viewport?.y ?? 0;
+    const vpW = (viewport?.width && viewport.width > 0) ? viewport.width : imageWidth;
+    const vpH = (viewport?.height && viewport.height > 0) ? viewport.height : imageHeight;
+
+    const normX = fitWidth > 0 ? contentRelX / fitWidth : 0;
+    const normY = fitHeight > 0 ? contentRelY / fitHeight : 0;
+
+    const imageX = vpX + normX * vpW;
+    const imageY = vpY + normY * vpH;
+
+    return {
+        x: Math.max(0, Math.min(imageWidth, imageX)),
+        y: Math.max(0, Math.min(imageHeight, imageY)),
+        isInsideContent,
+    };
 }

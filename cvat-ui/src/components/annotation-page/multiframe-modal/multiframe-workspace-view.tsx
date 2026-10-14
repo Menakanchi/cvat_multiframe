@@ -12,10 +12,10 @@ import Alert from 'antd/lib/alert';
 import Spin from 'antd/lib/spin';
 import Select from 'antd/lib/select';
 import Checkbox from 'antd/lib/checkbox';
-import { CloseOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
+import { CloseOutlined, LeftOutlined, RightOutlined, SaveOutlined } from '@ant-design/icons';
 
 import { CombinedState } from 'reducers';
-import { switchShowMultiframeModal, changeFrameAsync } from 'actions/annotation-actions';
+import { switchShowMultiframeModal, changeFrameAsync, saveAnnotationsAsync } from 'actions/annotation-actions';
 import { shallowEqual } from 'utils/redux';
 import {
     validateFrameRange,
@@ -45,6 +45,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         activatedElementID,
         activeFrameStates,
         frameNumbers,
+        isSaving,
     } = useSelector((state: CombinedState) => ({
         jobInstance: state.annotation.job.instance,
         currentFrame: state.annotation.player.frame.number,
@@ -52,6 +53,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         activatedElementID: state.annotation.annotations.activatedElementID,
         activeFrameStates: state.annotation.annotations.states,
         frameNumbers: state.annotation.job.frameNumbers,
+        isSaving: state.annotation.annotations.saving.uploading,
     }), shallowEqual);
 
     const hasValidFrames = Array.isArray(frameNumbers) && frameNumbers.length > 0;
@@ -69,6 +71,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
 
     // Object Selector & Auto-Zoom State
     const [selectedObjectKey, setSelectedObjectKey] = useState<string | null>(null);
+    const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>('all');
     const [autoZoomEnabled, setAutoZoomEnabled] = useState<boolean>(true);
     const [allJobStates, setAllJobStates] = useState<any[]>([]);
     const [initialFetchDone, setInitialFetchDone] = useState<boolean>(false);
@@ -124,6 +127,25 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         return extractSelectableObjects(merged);
     }, [allJobStates, activeFrameStates]);
 
+    // Available shape types for filtering
+    const availableTypes = useMemo(() => {
+        const types = new Set<string>();
+        for (const obj of selectableObjects) {
+            if (obj.shapeType) {
+                types.add(obj.shapeType);
+            }
+        }
+        return Array.from(types).sort();
+    }, [selectableObjects]);
+
+    // Objects filtered by the selected shape type
+    const filteredSelectableObjects = useMemo(() => {
+        if (selectedTypeFilter === 'all') {
+            return selectableObjects;
+        }
+        return selectableObjects.filter((obj) => obj.shapeType === selectedTypeFilter);
+    }, [selectableObjects, selectedTypeFilter]);
+
     // Clear selection if selected object is removed / no longer exists
     useEffect(() => {
         if (initialFetchDone && selectedObjectKey) {
@@ -137,22 +159,18 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     // Initialize selection from active canvas selection if not yet chosen
     useEffect(() => {
         if (selectedObjectKey === null && (activatedStateID || activatedElementID)) {
-            if (activatedElementID) {
-                const match = selectableObjects.find(
-                    (o) => o.parentID === activatedStateID && o.clientID === activatedElementID,
-                );
-                if (match) {
-                    setSelectedObjectKey(match.key);
-                    return;
-                }
-            }
+            let match = null;
             if (activatedStateID) {
-                const match = selectableObjects.find(
-                    (o) => o.clientID === activatedStateID && o.parentID === null,
-                );
-                if (match) {
-                    setSelectedObjectKey(match.key);
-                }
+                match = selectableObjects.find((o) => o.clientID === activatedStateID);
+            }
+            if (!match && activatedElementID) {
+                match = selectableObjects.find((o) => {
+                    const st = o.sourceState;
+                    return st && Array.isArray(st.elements) && st.elements.some((el: any) => el.clientID === activatedElementID);
+                });
+            }
+            if (match) {
+                setSelectedObjectKey(match.key);
             }
         }
     }, [activatedStateID, activatedElementID, selectableObjects, selectedObjectKey]);
@@ -212,15 +230,14 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         dispatch(changeFrameAsync(frame));
     }, [dispatch]);
 
-    const handleTileSelectObject = useCallback((targetState: any, targetElementState?: any) => {
-        if (targetElementState && targetElementState.label?.id) {
-            setSelectedObjectKey(`element_${targetState.clientID}_${targetElementState.label.id}`);
-        } else if (targetState.objectType === 'track') {
-            setSelectedObjectKey(`track_${targetState.clientID}`);
-        } else if (targetState.objectType === 'shape') {
-            setSelectedObjectKey(`shape_${targetState.clientID}`);
+    const handleTileSelectObject = useCallback((targetState: any) => {
+        if (!targetState) return;
+        const targetKey = targetState.objectType === 'track' ? `track_${targetState.clientID}` : `shape_${targetState.clientID}`;
+        setSelectedObjectKey(targetKey);
+        if (targetState.shapeType && selectedTypeFilter !== 'all' && targetState.shapeType !== selectedTypeFilter) {
+            setSelectedTypeFilter(targetState.shapeType);
         }
-    }, []);
+    }, [selectedTypeFilter]);
 
     const batchStartFrame = batchFrames.length > 0 ? batchFrames[0] : (hasValidFrames ? rangeStart : '-');
     const batchEndFrame = batchFrames.length > 0 ? batchFrames[batchFrames.length - 1] : (hasValidFrames ? rangeEnd : '-');
@@ -290,18 +307,47 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
 
                 {/* Object Selector & Auto-Zoom Controls */}
                 <div className='cvat-multiframe-object-group'>
+                    <Text strong>Type:</Text>
+                    <Select
+                        size='small'
+                        value={selectedTypeFilter}
+                        onChange={(val: string) => {
+                            setSelectedTypeFilter(val);
+                            if (val !== 'all' && selectedObjectKey) {
+                                const currentObj = selectableObjects.find((o) => o.key === selectedObjectKey);
+                                if (currentObj && currentObj.shapeType !== val) {
+                                    setSelectedObjectKey(null);
+                                }
+                            }
+                        }}
+                        style={{ width: 110 }}
+                        className='cvat-multiframe-type-select'
+                    >
+                        <Select.Option value='all'>All Types</Select.Option>
+                        {availableTypes.map((type) => (
+                            <Select.Option key={type} value={type}>
+                                {type.charAt(0).toUpperCase() + type.slice(1)}
+                            </Select.Option>
+                        ))}
+                    </Select>
+
                     <Text strong>Object:</Text>
                     <Select
                         size='small'
-                        placeholder='Select object...'
+                        showSearch
+                        placeholder='Select by ID or label...'
                         value={selectedObjectKey}
                         onChange={(val: string | null) => setSelectedObjectKey(val || null)}
                         allowClear
-                        style={{ minWidth: 200, maxWidth: 300 }}
+                        filterOption={(input, option) => {
+                            const children = String(option?.children || '').toLowerCase();
+                            return children.includes(input.toLowerCase());
+                        }}
+                        style={{ minWidth: 200, maxWidth: 320 }}
                         className='cvat-multiframe-object-select'
-                        disabled={selectableObjects.length === 0}
+                        disabled={filteredSelectableObjects.length === 0}
                     >
-                        {selectableObjects.map((obj) => (
+                        {filteredSelectableObjects.map((obj) => (
                             <Select.Option key={obj.key} value={obj.key}>
                                 {obj.displayText}
                             </Select.Option>
@@ -316,8 +362,20 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     </Checkbox>
                 </div>
 
-                {/* Right: Exit button */}
+                {/* Right: Save and Exit buttons */}
                 <div className='cvat-multiframe-exit-group'>
+                    <Button
+                        type='primary'
+                        size='small'
+                        icon={<SaveOutlined />}
+                        loading={isSaving}
+                        disabled={isSaving}
+                        onClick={() => dispatch(saveAnnotationsAsync())}
+                        className='cvat-multiframe-save-btn'
+                        style={{ marginRight: 8, background: '#1890ff', borderColor: '#1890ff' }}
+                    >
+                        {isSaving ? 'Saving...' : 'Save'}
+                    </Button>
                     <Button
                         type='primary'
                         danger
@@ -355,7 +413,12 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     <Text type='secondary'>No valid frames found in range [{rangeStart} .. {rangeEnd}].</Text>
                 </div>
             ) : (
-                <div className='cvat-multiframe-grid'>
+                <div
+                    className='cvat-multiframe-grid'
+                    style={{
+                        gridTemplateColumns: batchFrames.length < 4 ? `repeat(${Math.max(1, batchFrames.length)}, 1fr)` : undefined,
+                    }}
+                >
                     {batchFrames.map((frame) => (
                         <MultiframeTile
                             key={`frame_tile_${frame}`}
