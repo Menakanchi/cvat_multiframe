@@ -10,7 +10,7 @@ import Spin from 'antd/lib/spin';
 import Alert from 'antd/lib/alert';
 import Button from 'antd/lib/button';
 import Text from 'antd/lib/typography/Text';
-import { FullscreenOutlined } from '@ant-design/icons';
+import { FullscreenOutlined, FullscreenExitOutlined, AppstoreOutlined } from '@ant-design/icons';
 
 import { activateObject, updateAnnotationsAsync } from 'actions/annotation-actions';
 import {
@@ -36,6 +36,17 @@ interface Props {
     selectedObject: any | null;
     autoZoomEnabled?: boolean;
     autoFollowEnabled?: boolean;
+    isExpanded?: boolean;
+    isFullyExpanded?: boolean;
+    isZoomedInPlace?: boolean;
+    hasCustomLayout?: boolean;
+    expansionProgress?: number;
+    expandedStyle?: React.CSSProperties;
+    otherTileStyle?: React.CSSProperties;
+    tileStyle?: React.CSSProperties;
+    onStartExpand?(frame: number, e: React.MouseEvent, tileEl: HTMLElement): void;
+    onRestoreGrid?(): void;
+    onResetLayout?(frame: number): void;
     onNavigateToFrame(frame: number): void;
     onZoomFrame?(frame: number): void;
     onFrameStatesLoaded?(frameNumber: number, states: any[]): void;
@@ -50,6 +61,17 @@ function MultiframeTile(props: Props): JSX.Element {
         selectedObject,
         autoZoomEnabled = true,
         autoFollowEnabled = true,
+        isExpanded = false,
+        isFullyExpanded = false,
+        isZoomedInPlace = false,
+        hasCustomLayout = false,
+        expansionProgress = 0,
+        expandedStyle,
+        otherTileStyle,
+        tileStyle,
+        onStartExpand,
+        onRestoreGrid,
+        onResetLayout,
         onNavigateToFrame,
         onZoomFrame,
         onFrameStatesLoaded,
@@ -58,6 +80,7 @@ function MultiframeTile(props: Props): JSX.Element {
 
     const dispatch = useDispatch();
 
+    const tileRootRef = useRef<HTMLDivElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
     const contentRef = useRef<HTMLDivElement | null>(null);
@@ -491,11 +514,17 @@ function MultiframeTile(props: Props): JSX.Element {
         setManualViewport(null);
     }, []);
 
-    // Drag-to-resize zoom handler
+    // Drag-to-resize / drag-to-expand handler
     const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
         e.stopPropagation();
         e.preventDefault();
         if (e.button !== 0) return;
+
+        if (onStartExpand && tileRootRef.current) {
+            onStartExpand(frameNumber, e, tileRootRef.current);
+            return;
+        }
+
         if (dimensions.width <= 0 || dimensions.height <= 0) return;
 
         setIsResizing(true);
@@ -504,7 +533,7 @@ function MultiframeTile(props: Props): JSX.Element {
             clientY: e.clientY,
             startViewport: { ...effectiveViewport },
         };
-    }, [dimensions, effectiveViewport]);
+    }, [onStartExpand, frameNumber, dimensions, effectiveViewport]);
 
     useEffect(() => {
         if (!isResizing) return;
@@ -772,7 +801,13 @@ function MultiframeTile(props: Props): JSX.Element {
 
     return (
         <div
-            className={`cvat-multiframe-tile ${isActiveFrame ? 'cvat-multiframe-tile-active' : ''} ${isTileZoomed ? 'cvat-multiframe-tile-zoomed' : ''} ${isResizing ? 'cvat-multiframe-tile-resizing' : ''}`}
+            ref={tileRootRef}
+            className={`cvat-multiframe-tile ${isActiveFrame ? 'cvat-multiframe-tile-active' : ''} ${isTileZoomed ? 'cvat-multiframe-tile-zoomed' : ''} ${isResizing ? 'cvat-multiframe-tile-resizing' : ''} ${isExpanded ? 'cvat-multiframe-tile-expanded' : ''} ${isFullyExpanded ? 'cvat-multiframe-tile-fully-expanded' : ''} ${isZoomedInPlace ? 'cvat-multiframe-tile-zoomed-in-place' : ''}`}
+            style={{
+                ...tileStyle,
+                ...expandedStyle,
+                ...otherTileStyle,
+            }}
             onClick={() => {
                 if (!isActiveFrame) {
                     onNavigateToFrame(frameNumber);
@@ -866,17 +901,17 @@ function MultiframeTile(props: Props): JSX.Element {
                             size='small'
                             type='primary'
                             ghost
-                            className='cvat-multiframe-zoom-btn'
-                            icon={<FullscreenOutlined />}
+                            className={`cvat-multiframe-zoom-btn ${isZoomedInPlace ? 'cvat-multiframe-zoom-out-btn' : ''}`}
+                            icon={isZoomedInPlace ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
                             onClick={(e) => {
                                 e.stopPropagation();
                                 if (onZoomFrame) {
                                     onZoomFrame(frameNumber);
                                 }
                             }}
-                            title='Open frame in full-size annotation view'
+                            title={isZoomedInPlace ? 'Restore frame to normal grid size' : 'Zoom frame in place within workspace'}
                         >
-                            Zoom
+                            {isZoomedInPlace ? 'Zoom Out' : 'Zoom'}
                         </Button>
                         <span className='cvat-multiframe-zoom-pct'>
                             {`${zoomPct}%`}
@@ -893,6 +928,28 @@ function MultiframeTile(props: Props): JSX.Element {
                                 title='Reset View'
                             >
                                 Reset
+                            </Button>
+                        )}
+                        {(isZoomedInPlace || hasCustomLayout || (isExpanded && onRestoreGrid)) && (
+                            <Button
+                                size='small'
+                                type='primary'
+                                ghost
+                                className='cvat-multiframe-restore-grid-btn'
+                                icon={<AppstoreOutlined />}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (onResetLayout) {
+                                        onResetLayout(frameNumber);
+                                    } else if (onRestoreGrid) {
+                                        onRestoreGrid();
+                                    } else if (onZoomFrame) {
+                                        onZoomFrame(frameNumber);
+                                    }
+                                }}
+                                title='Restore original grid layout'
+                            >
+                                {isZoomedInPlace ? 'Zoom Out' : 'Restore Grid'}
                             </Button>
                         )}
                     </div>
@@ -939,14 +996,14 @@ function MultiframeTile(props: Props): JSX.Element {
                     </div>
                 </div>
 
-                {/* Drag-to-resize zoom handle at bottom-right corner of tile */}
+                {/* Drag-to-resize / drag-to-expand handle at bottom-right corner of tile */}
                 {!loading && !error && (
                     <div
                         className={`cvat-multiframe-tile-resize-handle ${isResizing ? 'cvat-multiframe-tile-resizing' : ''}`}
                         onMouseDown={handleResizeMouseDown}
                         onClick={(e) => e.stopPropagation()}
                         onDoubleClick={(e) => e.stopPropagation()}
-                        title='Drag to resize zoom'
+                        title={isExpanded ? 'Drag corner inward to restore grid or outward to expand' : 'Drag to expand frame across workspace'}
                     >
                         <svg viewBox='0 0 10 10' className='cvat-multiframe-resize-icon'>
                             <line x1='8' y1='2' x2='2' y2='8' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />

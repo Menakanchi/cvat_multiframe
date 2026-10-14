@@ -1081,3 +1081,67 @@ export function navigateFullscreenFrame(
         batchIndex: computedBatch >= 0 ? computedBatch : currentState.batchIndex,
     };
 }
+
+/**
+ * Geometry rectangle of a tile or workspace area.
+ */
+export interface TileExpansionRect {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+}
+
+/**
+ * Calculates expansion progress (0 to 1) when dragging the bottom-right corner of a tile.
+ * - Outward drag (dx > 0, dy > 0) increases progress toward 1 (full workspace expansion).
+ * - Inward drag (dx < 0, dy < 0) decreases progress toward 0 (original grid layout).
+ */
+export function calculateExpansionProgress(
+    startProgress: number,
+    dx: number,
+    dy: number,
+    maxDistance: number = 250,
+): number {
+    const delta = (dx + dy) / 2;
+    const progress = startProgress + delta / Math.max(50, maxDistance);
+    return Math.max(0, Math.min(1, progress));
+}
+
+/**
+ * Calculates the interpolated geometry for an expanding tile between its initial grid cell
+ * and the full workspace grid boundaries.
+ */
+export function calculateExpandedTileGeometry(
+    initialRect: TileExpansionRect,
+    workspaceRect: TileExpansionRect,
+    progress: number,
+): TileExpansionRect {
+    const p = Math.max(0, Math.min(1, progress));
+    return {
+        left: Math.round(initialRect.left * (1 - p) + workspaceRect.left * p),
+        top: Math.round(initialRect.top * (1 - p) + workspaceRect.top * p),
+        width: Math.round(initialRect.width + (workspaceRect.width - initialRect.width) * p),
+        height: Math.round(initialRect.height + (workspaceRect.height - initialRect.height) * p),
+    };
+}
+
+/**
+ * Calculates opacity and visibility for other tiles as the selected tile expands.
+ * Progressively dims other tiles, and hides them completely when progress reaches hideThreshold.
+ */
+export function calculateOtherTileOpacity(
+    progress: number,
+    baseOpacity: number = 1,
+    hideThreshold: number = 0.75,
+): { opacity: number; isHidden: boolean } {
+    const p = Math.max(0, Math.min(1, progress));
+    if (p >= hideThreshold) {
+        return { opacity: 0, isHidden: true };
+    }
+    const fadeRatio = 1 - (p / hideThreshold);
+    return {
+        opacity: Math.max(0, baseOpacity * fadeRatio),
+        isHidden: false,
+    };
+}

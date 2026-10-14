@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useCallback, useMemo, useEffect, useState } from 'react';
+import React, { useCallback, useMemo, useEffect, useState, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import Button from 'antd/lib/button';
 import Text from 'antd/lib/typography/Text';
@@ -18,8 +18,6 @@ import { CombinedState } from 'reducers';
 import { switchShowMultiframeModal, changeFrameAsync, saveAnnotationsAsync } from 'actions/annotation-actions';
 import { shallowEqual } from 'utils/redux';
 import { clamp } from 'utils/math';
-import CanvasLayout from 'components/annotation-page/canvas/grid-layout/canvas-layout';
-import BrushTools from 'components/annotation-page/canvas/views/canvas2d/brush-tools';
 import {
     validateFrameRange,
     getBatchFrames,
@@ -81,10 +79,16 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>('all');
     const [autoZoomEnabled, setAutoZoomEnabled] = useState<boolean>(true);
     const [autoFollowEnabled, setAutoFollowEnabled] = useState<boolean>(true);
-    const [focusModeEnabled, setFocusModeEnabled] = useState<boolean>(true);
+    const [focusModeEnabled, setFocusModeEnabled] = useState<boolean>(false);
     const [allJobStates, setAllJobStates] = useState<any[]>([]);
     const [initialFetchDone, setInitialFetchDone] = useState<boolean>(false);
     const [zoomedFrame, setZoomedFrame] = useState<number | null>(null);
+
+    // Drag-to-Expand Workspace Tile State
+    const gridRef = useRef<HTMLDivElement | null>(null);
+    const [expandedFrame, setExpandedFrame] = useState<number | null>(null);
+    const [tileLayoutSizes, setTileLayoutSizes] = useState<Record<number, { colSpan: number; minHeight: number }>>({});
+    const [_isExpanding, setIsExpanding] = useState<boolean>(false);
 
     // Fetch initial annotations for job
     useEffect(() => {
@@ -244,44 +248,143 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     }, [dispatch]);
 
     const handleZoomFrame = useCallback((frame: number) => {
-        setZoomedFrame(frame);
+        setZoomedFrame((prev) => (prev === frame ? null : frame));
         dispatch(changeFrameAsync(frame));
         setTimeout(() => {
             window.dispatchEvent(new Event('resize'));
         }, 50);
     }, [dispatch]);
 
-    const handleReturnToGrid = useCallback(() => {
-        setZoomedFrame(null);
+    const handleResetLayout = useCallback((targetFrame?: number) => {
+        if (typeof targetFrame === 'number') {
+            setTileLayoutSizes((prev) => {
+                const next = { ...prev };
+                delete next[targetFrame];
+                return next;
+            });
+            if (zoomedFrame === targetFrame) {
+                setZoomedFrame(null);
+            }
+        } else {
+            setTileLayoutSizes({});
+            setZoomedFrame(null);
+            setExpandedFrame(null);
+        }
         setTimeout(() => {
             window.dispatchEvent(new Event('resize'));
         }, 50);
-    }, []);
+    }, [zoomedFrame]);
 
-    // Sync zoomedFrame with currentFrame if navigation occurs inside full-screen view
-    useEffect(() => {
-        if (zoomedFrame !== null && currentFrame !== zoomedFrame) {
-            setZoomedFrame(currentFrame);
-            const computedBatch = Math.floor((currentFrame - rangeStart) / batchSize);
-            if (computedBatch >= 0 && computedBatch < totalBatches && computedBatch !== batchIndex) {
-                setBatchIndex(computedBatch);
-            }
-        }
-    }, [currentFrame, zoomedFrame, rangeStart, totalBatches, batchIndex, batchSize]);
+    const handleRestoreGrid = handleResetLayout;
 
-    // Escape key returns to Multi-Frame grid
+    // Escape key restores layout when zoomed in place or expanded
     useEffect(() => {
-        if (zoomedFrame === null) return undefined;
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
-                handleReturnToGrid();
+                if (zoomedFrame !== null || Object.keys(tileLayoutSizes).length > 0 || expandedFrame !== null) {
+                    handleResetLayout();
+                }
             }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => {
             window.removeEventListener('keydown', handleKeyDown);
         };
-    }, [zoomedFrame, handleReturnToGrid]);
+    }, [zoomedFrame, tileLayoutSizes, expandedFrame, handleResetLayout]);
+
+    // Restore grid if current batch frames no longer include expanded frame
+    useEffect(() => {
+        if (expandedFrame !== null && !batchFrames.includes(expandedFrame)) {
+            handleResetLayout(expandedFrame);
+        }
+    }, [batchFrames, expandedFrame, handleResetLayout]);
+
+    // Drag-to-expand tile layout handler (expanding/shrinking layout area in grid)
+    const handleTileStartExpand = useCallback((frame: number, e: React.MouseEvent, tileEl: HTMLElement) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (e.button !== 0) return;
+
+        const gridEl = gridRef.current;
+        if (!gridEl || !tileEl) return;
+
+        if (frame !== currentFrame) {
+            dispatch(changeFrameAsync(frame));
+        }
+
+        const tileRect = tileEl.getBoundingClientRect();
+        const gridRect = gridEl.getBoundingClientRect();
+        const colWidth = Math.max(120, gridRect.width / 4);
+
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const initialWidth = tileRect.width;
+        const initialHeight = tileRect.height;
+        const currentLayout = tileLayoutSizes[frame];
+        const initialColSpan = currentLayout?.colSpan || 1;
+        const initialMinHeight = currentLayout?.minHeight || initialHeight;
+
+        setIsExpanding(true);
+        setExpandedFrame(frame);
+
+        const originalCursor = document.body.style.cursor;
+        const originalUserSelect = document.body.style.userSelect;
+        document.body.style.cursor = 'nwse-resize';
+        document.body.style.userSelect = 'none';
+
+        let lastColSpan = initialColSpan;
+        let lastMinHeight = initialMinHeight;
+
+        const onMouseMove = (moveEvent: MouseEvent) => {
+            const dx = moveEvent.clientX - startX;
+            const dy = moveEvent.clientY - startY;
+
+            const targetWidth = initialWidth + dx;
+            const targetHeight = initialHeight + dy;
+
+            let colSpan = 1;
+            if (targetWidth > colWidth * 3.1) {
+                colSpan = 4;
+            } else if (targetWidth > colWidth * 2.1) {
+                colSpan = 3;
+            } else if (targetWidth > colWidth * 1.2) {
+                colSpan = 2;
+            } else {
+                colSpan = 1;
+            }
+
+            const minHeight = Math.max(160, Math.min(800, Math.round(targetHeight)));
+            lastColSpan = colSpan;
+            lastMinHeight = minHeight;
+
+            setTileLayoutSizes((prev) => ({
+                ...prev,
+                [frame]: { colSpan, minHeight },
+            }));
+            window.dispatchEvent(new Event('resize'));
+        };
+
+        const onMouseUp = () => {
+            setIsExpanding(false);
+            setExpandedFrame(null);
+            document.body.style.cursor = originalCursor;
+            document.body.style.userSelect = originalUserSelect;
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
+
+            if (lastColSpan === 1 && lastMinHeight <= 180) {
+                setTileLayoutSizes((prev) => {
+                    const next = { ...prev };
+                    delete next[frame];
+                    return next;
+                });
+            }
+            window.dispatchEvent(new Event('resize'));
+        };
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+    }, [currentFrame, dispatch, tileLayoutSizes]);
 
     const handleTileSelectObject = useCallback((targetState: any) => {
         if (!targetState) return;
@@ -296,102 +399,9 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const batchEndFrame = batchFrames.length > 0 ? batchFrames[batchFrames.length - 1] : (hasValidFrames ? rangeEnd : '-');
 
     return (
-        <div className={`cvat-multiframe-workspace-view ${zoomedFrame !== null ? 'cvat-multiframe-workspace-fullscreen' : ''}`}>
-            {zoomedFrame !== null ? (
-                <div className='cvat-multiframe-fullscreen-container'>
-                    {/* Full-Screen Top Banner */}
-                    <div className='cvat-multiframe-fullscreen-banner'>
-                        <div className='cvat-multiframe-fullscreen-banner-left'>
-                            <Button
-                                type='primary'
-                                icon={<AppstoreOutlined />}
-                                onClick={handleReturnToGrid}
-                                className='cvat-multiframe-return-btn'
-                            >
-                                Return to Multi-Frame
-                            </Button>
-                            <Text strong className='cvat-multiframe-fullscreen-title'>
-                                {`Frame #${zoomedFrame} — Full-Size Annotation View`}
-                            </Text>
-                            <Tag color='geekblue' className='cvat-multiframe-badge'>
-                                {`Batch ${batchIndex + 1}/${totalBatches}`}
-                            </Tag>
-                            <Tag className='cvat-multiframe-badge'>
-                                {`Range: [${rangeStart} .. ${rangeEnd}]`}
-                            </Tag>
-                            {selectedObject && (
-                                <Tag color='cyan' className='cvat-multiframe-badge'>
-                                    {`Object: ${selectableObjects.find((o) => o.key === selectedObjectKey)?.displayText || 'Selected'}`}
-                                </Tag>
-                            )}
-                        </div>
-                        <div className='cvat-multiframe-fullscreen-banner-right'>
-                            <Button
-                                size='small'
-                                icon={<LeftOutlined />}
-                                disabled={batchFrames.indexOf(zoomedFrame) <= 0}
-                                onClick={() => {
-                                    const idx = batchFrames.indexOf(zoomedFrame);
-                                    if (idx > 0) {
-                                        const prevF = batchFrames[idx - 1];
-                                        handleZoomFrame(prevF);
-                                    }
-                                }}
-                                style={{ marginRight: 6 }}
-                                title='Previous frame in batch'
-                            >
-                                Prev Frame
-                            </Button>
-                            <Button
-                                size='small'
-                                icon={<RightOutlined />}
-                                disabled={batchFrames.indexOf(zoomedFrame) >= batchFrames.length - 1}
-                                onClick={() => {
-                                    const idx = batchFrames.indexOf(zoomedFrame);
-                                    if (idx >= 0 && idx < batchFrames.length - 1) {
-                                        const nextF = batchFrames[idx + 1];
-                                        handleZoomFrame(nextF);
-                                    }
-                                }}
-                                style={{ marginRight: 12 }}
-                                title='Next frame in batch'
-                            >
-                                Next Frame
-                            </Button>
-                            <Button
-                                type='primary'
-                                size='small'
-                                icon={<SaveOutlined />}
-                                loading={isSaving}
-                                disabled={isSaving}
-                                onClick={() => dispatch(saveAnnotationsAsync())}
-                                className='cvat-multiframe-save-btn'
-                                style={{ marginRight: 8, background: '#1890ff', borderColor: '#1890ff' }}
-                            >
-                                {isSaving ? 'Saving...' : 'Save'}
-                            </Button>
-                            <Button
-                                type='default'
-                                danger
-                                size='small'
-                                icon={<CloseOutlined />}
-                                onClick={onClose}
-                                title='Exit Multi-Frame'
-                            >
-                                Exit Multi-Frame
-                            </Button>
-                        </div>
-                    </div>
-                    {/* CVAT Native Canvas Layout */}
-                    <div className='cvat-multiframe-fullscreen-canvas-wrapper'>
-                        <CanvasLayout />
-                        <BrushTools />
-                    </div>
-                </div>
-            ) : (
-                <>
-                    {/* Header Controls Bar */}
-                    <div className='cvat-multiframe-controls-bar'>
+        <div className={`cvat-multiframe-workspace-view ${zoomedFrame !== null ? 'cvat-multiframe-workspace-has-zoomed' : ''}`}>
+            {/* Header Controls Bar */}
+            <div className='cvat-multiframe-controls-bar'>
                 {/* Left: Range and Navigation */}
                 <div className='cvat-multiframe-range-group'>
                     <Text strong>Range:</Text>
@@ -540,6 +550,20 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
 
                 {/* Right: Save and Exit buttons */}
                 <div className='cvat-multiframe-exit-group'>
+                    {(zoomedFrame !== null || Object.keys(tileLayoutSizes).length > 0 || expandedFrame !== null) && (
+                        <Button
+                            size='small'
+                            type='primary'
+                            ghost
+                            icon={<AppstoreOutlined />}
+                            onClick={() => handleResetLayout()}
+                            className='cvat-multiframe-restore-grid-top-btn'
+                            style={{ marginRight: 8 }}
+                            title='Restore original grid layout'
+                        >
+                            Restore Grid
+                        </Button>
+                    )}
                     <Button
                         type='primary'
                         size='small'
@@ -590,29 +614,62 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                 </div>
             ) : (
                 <div
+                    ref={gridRef}
                     className={`cvat-multiframe-grid ${focusModeEnabled ? 'cvat-multiframe-grid-focus-mode' : ''}`}
                     style={{
+                        position: 'relative',
                         gridTemplateColumns: batchFrames.length < 4 ? `repeat(${Math.max(1, batchFrames.length)}, 1fr)` : undefined,
                     }}
                 >
-                    {batchFrames.map((frame) => (
-                        <MultiframeTile
-                            key={`frame_tile_${frame}`}
-                            frameNumber={frame}
-                            jobInstance={jobInstance}
-                            isActiveFrame={frame === currentFrame}
-                            selectedObject={selectedObject}
-                            autoZoomEnabled={autoZoomEnabled}
-                            autoFollowEnabled={autoFollowEnabled}
-                            onNavigateToFrame={handleNavigateToFrame}
-                            onZoomFrame={handleZoomFrame}
-                            onFrameStatesLoaded={handleFrameStatesLoaded}
-                            onSelectObject={handleTileSelectObject}
-                        />
-                    ))}
+                    {batchFrames.map((frame) => {
+                        const isThisZoomed = zoomedFrame === frame;
+                        const layoutSize = tileLayoutSizes[frame];
+                        const hasCustom = Boolean(layoutSize && (layoutSize.colSpan > 1 || layoutSize.minHeight > 180));
+
+                        let tileStyle: React.CSSProperties | undefined;
+                        if (isThisZoomed) {
+                            tileStyle = {
+                                gridColumn: '1 / -1',
+                                minHeight: '520px',
+                                zIndex: 10,
+                            };
+                        } else if (layoutSize) {
+                            tileStyle = {
+                                gridColumn: layoutSize.colSpan >= 4 ? '1 / -1' : (layoutSize.colSpan > 1 ? `span ${layoutSize.colSpan}` : undefined),
+                                minHeight: `${layoutSize.minHeight}px`,
+                                zIndex: layoutSize.colSpan > 1 ? 5 : undefined,
+                            };
+                        }
+
+                        return (
+                            <React.Fragment key={`frame_tile_wrapper_${frame}`}>
+                                <div
+                                    className='cvat-multiframe-tile-placeholder'
+                                    style={{ display: 'none' }}
+                                />
+                                <MultiframeTile
+                                    key={`frame_tile_${frame}`}
+                                    frameNumber={frame}
+                                    jobInstance={jobInstance}
+                                    isActiveFrame={frame === currentFrame}
+                                    selectedObject={selectedObject}
+                                    autoZoomEnabled={autoZoomEnabled}
+                                    autoFollowEnabled={autoFollowEnabled}
+                                    isZoomedInPlace={isThisZoomed}
+                                    hasCustomLayout={hasCustom}
+                                    tileStyle={tileStyle}
+                                    onStartExpand={handleTileStartExpand}
+                                    onRestoreGrid={handleResetLayout}
+                                    onResetLayout={handleResetLayout}
+                                    onNavigateToFrame={handleNavigateToFrame}
+                                    onZoomFrame={handleZoomFrame}
+                                    onFrameStatesLoaded={handleFrameStatesLoaded}
+                                    onSelectObject={handleTileSelectObject}
+                                />
+                            </React.Fragment>
+                        );
+                    })}
                 </div>
-            )}
-                </>
             )}
         </div>
     );

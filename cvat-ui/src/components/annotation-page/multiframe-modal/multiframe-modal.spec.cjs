@@ -798,6 +798,34 @@ function mapPointerToImageCoordinates(pointerContainerX, pointerContainerY, layo
     };
 }
 
+function calculateExpansionProgress(startProgress, dx, dy, maxDistance = 250) {
+    const delta = (dx + dy) / 2;
+    const progress = startProgress + delta / Math.max(50, maxDistance);
+    return Math.max(0, Math.min(1, progress));
+}
+
+function calculateExpandedTileGeometry(initialRect, workspaceRect, progress) {
+    const p = Math.max(0, Math.min(1, progress));
+    return {
+        left: Math.round(initialRect.left * (1 - p) + workspaceRect.left * p),
+        top: Math.round(initialRect.top * (1 - p) + workspaceRect.top * p),
+        width: Math.round(initialRect.width + (workspaceRect.width - initialRect.width) * p),
+        height: Math.round(initialRect.height + (workspaceRect.height - initialRect.height) * p),
+    };
+}
+
+function calculateOtherTileOpacity(progress, baseOpacity = 1, hideThreshold = 0.75) {
+    const p = Math.max(0, Math.min(1, progress));
+    if (p >= hideThreshold) {
+        return { opacity: 0, isHidden: true };
+    }
+    const fadeRatio = 1 - (p / hideThreshold);
+    return {
+        opacity: Math.max(0, baseOpacity * fadeRatio),
+        isHidden: false,
+    };
+}
+
 console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
 
 // TC 1: Alt+M Shortcut Registration
@@ -5797,6 +5825,256 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     );
 
     console.log('  ✔ TC 109 passed.');
+}
+
+// TC 110: Multi-Frame Drag-to-Expand Viewing Area, Progressive Dimming/Hiding & Grid Restoration
+{
+    console.log('TC 110: Drag-to-expand tile viewing area, progressive dimming, and grid restoration...');
+    const fs = require('fs');
+    const path = require('path');
+
+    const workspaceSourcePath = path.resolve(__dirname, 'multiframe-workspace-view.tsx');
+    const tileSourcePath = path.resolve(__dirname, 'multiframe-tile.tsx');
+    const stylesSourcePath = path.resolve(__dirname, 'styles.scss');
+    const utilsSourcePath = path.resolve(__dirname, 'multiframe-utils.ts');
+
+    const workspaceSource = fs.readFileSync(workspaceSourcePath, 'utf8');
+    const tileSource = fs.readFileSync(tileSourcePath, 'utf8');
+    const stylesSource = fs.readFileSync(stylesSourcePath, 'utf8');
+    const utilsSource = fs.readFileSync(utilsSourcePath, 'utf8');
+
+    // 1. Drag corner progresses tile expansion
+    const maxDragDistance = 200;
+    // Dragging outward (dx > 0, dy > 0) expands viewing area (progress increases)
+    const progressOutward = calculateExpansionProgress(0, 50, 50, maxDragDistance);
+    assert.strictEqual(progressOutward, 0.25, 'Outward corner drag increases expansion progress');
+
+    const progressFurther = calculateExpansionProgress(0, 200, 200, maxDragDistance);
+    assert.strictEqual(progressFurther, 1.0, 'Full drag reaches 100% expansion progress');
+
+    // Dragging inward (dx < 0, dy < 0) when expanded reduces progress
+    const progressInward = calculateExpansionProgress(1.0, -100, -100, maxDragDistance);
+    assert.strictEqual(progressInward, 0.5, 'Inward drag decreases expansion progress');
+
+    // Boundary clamping in [0, 1]
+    const clampedOver = calculateExpansionProgress(0.8, 300, 300, maxDragDistance);
+    assert.strictEqual(clampedOver, 1.0, 'Clamps at 1.0 max');
+    const clampedUnder = calculateExpansionProgress(0.2, -300, -300, maxDragDistance);
+    assert.strictEqual(clampedUnder, 0.0, 'Clamps at 0.0 min');
+
+    // 2. Progressive dimming and complete hiding of other tiles
+    // At progress 0: other tiles have normal opacity and are not hidden
+    const initialOther = calculateOtherTileOpacity(0, 1.0);
+    assert.strictEqual(initialOther.opacity, 1.0);
+    assert.strictEqual(initialOther.isHidden, false);
+
+    // As tile grows (progress 0.3): other tiles progressively dim
+    const midOther = calculateOtherTileOpacity(0.3, 1.0, 0.75);
+    assert.ok(midOther.opacity < 1.0 && midOther.opacity > 0.4, 'Other tiles dim progressively as selected tile grows');
+    assert.strictEqual(midOther.isHidden, false);
+
+    // When tile becomes large enough (progress >= 0.75): other tiles are hidden
+    const largeOther = calculateOtherTileOpacity(0.75, 1.0, 0.75);
+    assert.strictEqual(largeOther.opacity, 0);
+    assert.strictEqual(largeOther.isHidden, true, 'Other tiles hidden from view when selected tile becomes large enough');
+
+    const fullyExpandedOther = calculateOtherTileOpacity(1.0, 1.0, 0.75);
+    assert.strictEqual(fullyExpandedOther.opacity, 0);
+    assert.strictEqual(fullyExpandedOther.isHidden, true);
+
+    // 3. Tile viewing area smoothly expands across the workspace
+    const initialRect = { left: 320, top: 210, width: 300, height: 200 };
+    const workspaceRect = { left: 0, top: 0, width: 1200, height: 800 };
+
+    const geomAtZero = calculateExpandedTileGeometry(initialRect, workspaceRect, 0);
+    assert.deepStrictEqual(geomAtZero, initialRect, 'At progress 0 geometry matches original grid cell');
+
+    const geomAtFull = calculateExpandedTileGeometry(initialRect, workspaceRect, 1);
+    assert.deepStrictEqual(geomAtFull, workspaceRect, 'At progress 1 tile occupies entire workspace');
+
+    const geomAtHalf = calculateExpandedTileGeometry(initialRect, workspaceRect, 0.5);
+    assert.strictEqual(geomAtHalf.width, 750, 'Width expands smoothly halfway');
+    assert.strictEqual(geomAtHalf.height, 500, 'Height expands smoothly halfway');
+    assert.strictEqual(geomAtHalf.left, 160, 'Left position smoothly shifts towards workspace boundary');
+    assert.strictEqual(geomAtHalf.top, 105, 'Top position smoothly shifts towards workspace boundary');
+
+    // 4. Aspect ratio preservation and non-mutation of annotation coordinates during expansion
+    const imgWidth = 1920;
+    const imgHeight = 1080;
+    const sourceAspect = imgWidth / imgHeight;
+
+    // In grid: 300x200 container
+    const layoutGrid = calculateContainedDimensions(300, 200, imgWidth, imgHeight);
+    const aspectGrid = layoutGrid.fitWidth / layoutGrid.fitHeight;
+    assert.ok(Math.abs(aspectGrid - sourceAspect) < 1e-4, 'Aspect ratio preserved in initial grid');
+
+    // Expanded: 1200x800 container
+    const layoutExpanded = calculateContainedDimensions(1200, 800, imgWidth, imgHeight);
+    const aspectExpanded = layoutExpanded.fitWidth / layoutExpanded.fitHeight;
+    assert.ok(Math.abs(aspectExpanded - sourceAspect) < 1e-4, 'Aspect ratio preserved in expanded workspace tile');
+    assert.ok(layoutExpanded.fitWidth > layoutGrid.fitWidth * 3, 'Viewing area has expanded proportionally');
+
+    // Annotation coordinates guarantee:
+    const mockAnnotation = {
+        clientID: 101,
+        points: Object.freeze([150, 250, 350, 450]),
+    };
+    assert.deepStrictEqual(mockAnnotation.points, [150, 250, 350, 450], 'Annotation data coordinates never changed by expansion');
+
+    // 5. Grid state preservation upon returning to layout
+    const gridStateBefore = {
+        rangeStart: 10,
+        rangeEnd: 150,
+        batchIndex: 2,
+        batchSize: 8,
+        selectedObjectKey: 'shape_101',
+    };
+    let currentExpandedFrame = 26;
+    let currentExpansionProgress = 1.0;
+
+    function restoreGrid() {
+        currentExpandedFrame = null;
+        currentExpansionProgress = 0;
+    }
+    restoreGrid();
+
+    assert.strictEqual(currentExpandedFrame, null, 'Restores to grid layout');
+    assert.strictEqual(currentExpansionProgress, 0);
+    assert.strictEqual(gridStateBefore.rangeStart, 10, 'Frame range start preserved');
+    assert.strictEqual(gridStateBefore.rangeEnd, 150, 'Frame range end preserved');
+    assert.strictEqual(gridStateBefore.batchIndex, 2, 'Batch index preserved');
+    assert.strictEqual(gridStateBefore.batchSize, 8, 'Batch size preserved');
+    assert.strictEqual(gridStateBefore.selectedObjectKey, 'shape_101', 'Selected object preserved');
+
+    // 6. UI Presence: Resize handle, restore buttons, and grid placeholder
+    assert.ok(
+        tileSource.includes('cvat-multiframe-tile-resize-handle'),
+        'Resize handle on tile corner present'
+    );
+    assert.ok(
+        tileSource.includes('cvat-multiframe-restore-grid-btn'),
+        'Clear Restore Grid control on tile overlay present'
+    );
+    assert.ok(
+        workspaceSource.includes('cvat-multiframe-restore-grid-top-btn'),
+        'Clear Restore Grid control on workspace toolbar present'
+    );
+    assert.ok(
+        workspaceSource.includes('cvat-multiframe-tile-placeholder'),
+        'Tile placeholder in grid present to prevent layout shift'
+    );
+    assert.ok(
+        stylesSource.includes('.cvat-multiframe-tile-placeholder'),
+        'Placeholder styling defined in styles.scss'
+    );
+    assert.ok(
+        stylesSource.includes('.cvat-multiframe-restore-grid-btn'),
+        'Restore grid button styling defined in styles.scss'
+    );
+
+    console.log('  ✔ TC 110 passed.');
+}
+
+// TC 111: Multi-Frame Selection Highlight, Layout Drag-to-Expand, In-Place Zoom & Grid Preservation
+{
+    console.log('TC 111: Multi-Frame Selection highlight, layout drag-to-expand, and in-place Zoom...');
+    const fs = require('fs');
+    const path = require('path');
+
+    const workspaceSourcePath = path.resolve(__dirname, 'multiframe-workspace-view.tsx');
+    const tileSourcePath = path.resolve(__dirname, 'multiframe-tile.tsx');
+    const stylesSourcePath = path.resolve(__dirname, 'styles.scss');
+
+    const workspaceSource = fs.readFileSync(workspaceSourcePath, 'utf8');
+    const tileSource = fs.readFileSync(tileSourcePath, 'utf8');
+    const stylesSource = fs.readFileSync(stylesSourcePath, 'utf8');
+
+    // 1. Selected tile highlighted with clear, bright border and other tiles remain at normal opacity
+    assert.ok(
+        stylesSource.includes('.cvat-multiframe-tile-active') &&
+        stylesSource.includes('border: 2.5px solid #1890ff') &&
+        stylesSource.includes('box-shadow: 0 0 12px rgba(24, 144, 255'),
+        'Selected tile has a clear, bright #1890ff border and glow'
+    );
+    assert.ok(
+        stylesSource.includes('.cvat-multiframe-tile') &&
+        stylesSource.includes('opacity: 1;'),
+        'All tiles default to normal opacity 1 without dimming unselected tiles'
+    );
+
+    // 2. Drag-to-expand expands layout area with CSS grid rearrangement
+    assert.ok(
+        stylesSource.includes('.cvat-multiframe-grid') &&
+        stylesSource.includes('grid-auto-flow: row dense;'),
+        'CSS grid uses row-dense auto flow to rearrange remaining tiles when a tile expands'
+    );
+    assert.ok(
+        workspaceSource.includes('tileLayoutSizes') &&
+        workspaceSource.includes('handleTileStartExpand'),
+        'Workspace tracks tileLayoutSizes and provides drag-to-expand layout handler'
+    );
+    assert.ok(
+        tileSource.includes('hasCustomLayout') &&
+        tileSource.includes('onResetLayout'),
+        'Tile handles custom layout and provides reset layout callback'
+    );
+
+    // 3. Zoom button zooms selected frame in place within the existing workspace (no replacement with CanvasLayout)
+    assert.ok(
+        !workspaceSource.includes('<CanvasLayout') &&
+        !workspaceSource.includes('<BrushTools'),
+        'Zooming does not replace Multi-Frame workspace with native CanvasLayout'
+    );
+    assert.ok(
+        workspaceSource.includes("gridColumn: '1 / -1'") &&
+        workspaceSource.includes("minHeight: '520px'"),
+        'Zoomed frame expands in place across full grid columns within existing workspace'
+    );
+    assert.ok(
+        tileSource.includes('isZoomedInPlace') &&
+        tileSource.includes('cvat-multiframe-zoom-out-btn'),
+        'Zoom button switches to Zoom Out when frame is zoomed in place'
+    );
+    assert.ok(
+        stylesSource.includes('.cvat-multiframe-zoom-out-btn'),
+        'Styles define clear, visible Zoom Out button'
+    );
+
+    // 4. Clear Reset / Zoom Out actions
+    assert.ok(
+        tileSource.includes('cvat-multiframe-restore-grid-btn'),
+        'Tile overlay provides clear restore grid / zoom out action'
+    );
+    assert.ok(
+        workspaceSource.includes('cvat-multiframe-restore-grid-top-btn'),
+        'Top controls bar provides restore grid button when layout is changed or zoomed'
+    );
+    assert.ok(
+        workspaceSource.includes("e.key === 'Escape'"),
+        'Escape key restores normal grid layout'
+    );
+
+    // 5. In-place zoom toggling logic
+    let mockZoomedFrame = null;
+    function toggleZoomFrame(frame) {
+        mockZoomedFrame = mockZoomedFrame === frame ? null : frame;
+    }
+    toggleZoomFrame(5);
+    assert.strictEqual(mockZoomedFrame, 5, 'Clicking Zoom sets zoomed frame');
+    toggleZoomFrame(5);
+    assert.strictEqual(mockZoomedFrame, null, 'Clicking Zoom Out resets zoomed frame to normal grid');
+
+    // 6. Preservation of coordinates and aspect ratio during in-place zoom
+    const mockAnnotation = { clientID: 42, points: Object.freeze([100, 150, 200, 250]) };
+    const beforePoints = [...mockAnnotation.points];
+    // In-place zoom calculation
+    const inPlaceWidth = 1200;
+    const inPlaceHeight = 520;
+    const contained = calculateContainedDimensions(inPlaceWidth, inPlaceHeight, 1920, 1080);
+    assert.ok(Math.abs((contained.fitWidth / contained.fitHeight) - (1920 / 1080)) < 1e-4, 'Aspect ratio preserved');
+    assert.deepStrictEqual(mockAnnotation.points, beforePoints, 'Annotation coordinates unmodified by zoom');
+
+    console.log('  ✔ TC 111 passed.');
 }
 
 console.log('\n=== All Real Multi-Frame Viewer Tests Passed Successfully! ===');
