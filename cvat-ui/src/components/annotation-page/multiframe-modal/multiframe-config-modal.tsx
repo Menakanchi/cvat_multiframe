@@ -40,16 +40,17 @@ function MultiframeConfigModal(props: Props): JSX.Element {
         frameNumbers: state.annotation.job.frameNumbers,
     }), shallowEqual);
 
-    const jobStartFrame = Array.isArray(frameNumbers) && frameNumbers.length > 0 ?
+    const hasValidFrames = Array.isArray(frameNumbers) && frameNumbers.length > 0;
+    const jobStartFrame = hasValidFrames ?
         frameNumbers[0] : (jobInstance?.startFrame ?? 0);
-    const jobStopFrame = Array.isArray(frameNumbers) && frameNumbers.length > 0 ?
+    const jobStopFrame = hasValidFrames ?
         frameNumbers[frameNumbers.length - 1] : (jobInstance?.stopFrame ?? 0);
 
     const [startFrame, setStartFrame] = useState<number>(jobStartFrame);
     const [endFrame, setEndFrame] = useState<number>(jobStopFrame);
 
     useEffect(() => {
-        if (visible) {
+        if (visible && hasValidFrames) {
             const [defStart, defEnd] = getDefaultFrameRange(
                 currentFrame,
                 jobStartFrame,
@@ -59,7 +60,7 @@ function MultiframeConfigModal(props: Props): JSX.Element {
             setStartFrame(defStart);
             setEndFrame(defEnd);
         }
-    }, [visible, currentFrame, jobStartFrame, jobStopFrame, frameNumbers]);
+    }, [visible, currentFrame, jobStartFrame, jobStopFrame, frameNumbers, hasValidFrames]);
 
     const validation = validateFrameRange(startFrame, endFrame, jobStartFrame, jobStopFrame, frameNumbers);
 
@@ -68,14 +69,14 @@ function MultiframeConfigModal(props: Props): JSX.Element {
     }, [dispatch]);
 
     const onOk = useCallback(() => {
-        if (validation.isValid) {
+        if (validation.isValid && hasValidFrames) {
             dispatch(switchShowMultiframeModal(false));
             dispatch(activateMultiframeWorkspace(true, startFrame, endFrame));
             if (onConfirm) {
                 onConfirm(startFrame, endFrame);
             }
         }
-    }, [dispatch, validation.isValid, startFrame, endFrame, onConfirm]);
+    }, [dispatch, validation.isValid, hasValidFrames, startFrame, endFrame, onConfirm]);
 
     return (
         <Modal
@@ -88,71 +89,85 @@ function MultiframeConfigModal(props: Props): JSX.Element {
             onOk={onOk}
             onCancel={onCancel}
             destroyOnClose
-            okButtonProps={{ disabled: !validation.isValid }}
+            okButtonProps={{ disabled: !validation.isValid || !hasValidFrames }}
         >
             <div className='cvat-multiframe-config-content'>
-                <Row style={{ marginBottom: 16 }}>
-                    <Col span={24}>
-                        <Text>
-                            Specify the inclusive frame range to display in the central workspace:
-                        </Text>
-                    </Col>
-                </Row>
+                {!hasValidFrames ? (
+                    <Row style={{ marginBottom: 16 }}>
+                        <Col span={24}>
+                            <Alert
+                                type='warning'
+                                showIcon
+                                message='Job frame numbers are unavailable or loading. Please wait.'
+                            />
+                        </Col>
+                    </Row>
+                ) : (
+                    <>
+                        <Row style={{ marginBottom: 16 }}>
+                            <Col span={24}>
+                                <Text>
+                                    Specify the inclusive frame range to display in the central workspace:
+                                </Text>
+                            </Col>
+                        </Row>
 
-                <Row gutter={16} align='middle' style={{ marginBottom: 16 }}>
-                    <Col span={6}>
-                        <Text strong>Start frame:</Text>
-                    </Col>
-                    <Col span={6}>
-                        <InputNumber
-                            size='small'
-                            min={jobStartFrame}
-                            max={jobStopFrame}
-                            value={startFrame}
-                            precision={0}
-                            onChange={(val: number | null) => {
-                                if (typeof val === 'number') {
-                                    setStartFrame(val);
-                                }
-                            }}
-                        />
-                    </Col>
-                    <Col span={6}>
-                        <Text strong>End frame:</Text>
-                    </Col>
-                    <Col span={6}>
-                        <InputNumber
-                            size='small'
-                            min={jobStartFrame}
-                            max={jobStopFrame}
-                            value={endFrame}
-                            precision={0}
-                            onChange={(val: number | null) => {
-                                if (typeof val === 'number') {
-                                    setEndFrame(val);
-                                }
-                            }}
-                        />
-                    </Col>
-                </Row>
+                        <Row gutter={16} align='middle' style={{ marginBottom: 16 }}>
+                            <Col span={6}>
+                                <Text strong>Start frame:</Text>
+                            </Col>
+                            <Col span={6}>
+                                <InputNumber
+                                    size='small'
+                                    min={jobStartFrame}
+                                    max={jobStopFrame}
+                                    value={startFrame}
+                                    precision={0}
+                                    onChange={(val: number | null) => {
+                                        if (typeof val === 'number') {
+                                            setStartFrame(val);
+                                        }
+                                    }}
+                                />
+                            </Col>
+                            <Col span={6}>
+                                <Text strong>End frame:</Text>
+                            </Col>
+                            <Col span={6}>
+                                <InputNumber
+                                    size='small'
+                                    min={jobStartFrame}
+                                    max={jobStopFrame}
+                                    value={endFrame}
+                                    precision={0}
+                                    onChange={(val: number | null) => {
+                                        if (typeof val === 'number') {
+                                            setEndFrame(val);
+                                        }
+                                    }}
+                                />
+                            </Col>
+                        </Row>
 
-                <Row style={{ marginBottom: 16 }}>
-                    <Col span={24}>
-                        <Slider
-                            range
-                            min={jobStartFrame}
-                            max={jobStopFrame}
-                            value={[
-                                clamp(startFrame, jobStartFrame, jobStopFrame),
-                                clamp(endFrame, jobStartFrame, jobStopFrame),
-                            ]}
-                            onChange={([val1, val2]: number[]) => {
-                                setStartFrame(val1);
-                                setEndFrame(val2);
-                            }}
-                        />
-                    </Col>
-                </Row>
+                        <Row style={{ marginBottom: 16 }}>
+                            <Col span={24}>
+                                <Slider
+                                    range
+                                    min={jobStartFrame}
+                                    max={jobStopFrame}
+                                    value={[
+                                        clamp(startFrame, jobStartFrame, jobStopFrame),
+                                        clamp(endFrame, jobStartFrame, jobStopFrame),
+                                    ]}
+                                    onChange={([val1, val2]: number[]) => {
+                                        setStartFrame(val1);
+                                        setEndFrame(val2);
+                                    }}
+                                />
+                            </Col>
+                        </Row>
+                    </>
+                )}
 
                 {!validation.isValid && validation.error && (
                     <Row>

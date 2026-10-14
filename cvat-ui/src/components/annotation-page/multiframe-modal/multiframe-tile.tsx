@@ -9,7 +9,12 @@ import Alert from 'antd/lib/alert';
 import Button from 'antd/lib/button';
 import Text from 'antd/lib/typography/Text';
 
-import { resolveCrossFrameIdentity } from './multiframe-utils';
+import {
+    resolveCrossFrameIdentity,
+    getObjectBoundingBox,
+    calculateAutoZoomViewport,
+    Viewport,
+} from './multiframe-utils';
 import MultiframeSvgOverlay from './multiframe-svg-overlay';
 
 interface Props {
@@ -17,7 +22,9 @@ interface Props {
     jobInstance: any;
     isActiveFrame: boolean;
     selectedObject: any | null;
+    autoZoomEnabled?: boolean;
     onNavigateToFrame(frame: number): void;
+    onFrameStatesLoaded?(frameNumber: number, states: any[]): void;
 }
 
 function MultiframeTile(props: Props): JSX.Element {
@@ -26,10 +33,13 @@ function MultiframeTile(props: Props): JSX.Element {
         jobInstance,
         isActiveFrame,
         selectedObject,
+        autoZoomEnabled = true,
         onNavigateToFrame,
+        onFrameStatesLoaded,
     } = props;
 
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
+    const imageDataRef = useRef<ImageBitmap | Blob | null>(null);
     const [loading, setLoading] = useState<boolean>(true);
     const [error, setError] = useState<string | null>(null);
     const [frameStates, setFrameStates] = useState<any[]>([]);
@@ -54,38 +64,18 @@ function MultiframeTile(props: Props): JSX.Element {
                 const { imageData, renderWidth, renderHeight } = await frameData.data();
                 if (isCancelled) return;
 
+                imageDataRef.current = imageData;
                 const width = renderWidth || frameData.width || 1920;
                 const height = renderHeight || frameData.height || 1080;
                 setDimensions({ width, height });
 
-                // 3. Paint bitmap directly to canvas
-                const canvas = canvasRef.current;
-                if (canvas) {
-                    canvas.width = width;
-                    canvas.height = height;
-                    const ctx = canvas.getContext('2d');
-                    if (ctx) {
-                        ctx.clearRect(0, 0, width, height);
-                        if (imageData instanceof ImageBitmap) {
-                            ctx.drawImage(imageData, 0, 0, width, height);
-                        } else if (imageData instanceof Blob) {
-                            const img = new Image();
-                            img.onload = () => {
-                                if (!isCancelled && canvasRef.current) {
-                                    ctx.drawImage(img, 0, 0, width, height);
-                                }
-                            };
-                            img.src = URL.createObjectURL(imageData);
-                        }
-                    }
-                }
-                // NOTE: We NEVER call imageData.close() because CVAT's FrameDecoder
-                // owns the shared in-memory decoded chunk cache!
-
-                // 4. Fetch actual frame annotations in-memory from AnnotationsCollection
+                // 3. Fetch actual frame annotations in-memory from AnnotationsCollection
                 const states = await jobInstance.annotations.get(frameNumber, true, []);
                 if (isCancelled) return;
                 setFrameStates(states);
+                if (onFrameStatesLoaded) {
+                    onFrameStatesLoaded(frameNumber, states);
+                }
             } catch (err: any) {
                 if (!isCancelled) {
                     setError(err?.message || 'Failed to load frame');
@@ -104,11 +94,80 @@ function MultiframeTile(props: Props): JSX.Element {
         };
     }, [frameNumber, jobInstance]);
 
-    // 5. Pure identity resolution
+    // 4. Pure identity resolution
     const matchResult = useMemo(
         () => resolveCrossFrameIdentity(selectedObject, frameStates),
         [selectedObject, frameStates],
     );
+
+    // 5. Per-frame auto-zoom viewport calculation
+    const targetViewport = useMemo<Viewport>(() => {
+        if (
+            !autoZoomEnabled ||
+            !selectedObject ||
+            matchResult.status !== 'MATCHED' ||
+            dimensions.width <= 0 ||
+            dimensions.height <= 0
+        ) {
+            return { x: 0, y: 0, width: dimensions.width, height: dimensions.height };
+        }
+
+        const bbox = getObjectBoundingBox(matchResult.targetState, matchResult.targetElementState);
+        if (!bbox) {
+            return { x: 0, y: 0, width: dimensions.width, height: dimensions.height };
+        }
+
+        return calculateAutoZoomViewport(bbox, dimensions.width, dimensions.height);
+    }, [autoZoomEnabled, selectedObject, matchResult, dimensions]);
+
+    // 6. Viewport canvas painting (centers and zooms onto target instance with native sharpness)
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        const imageData = imageDataRef.current;
+        if (!canvas || !imageData || dimensions.width === 0 || dimensions.height === 0) return;
+
+        const renderWidth = targetViewport.width > 0 ? targetViewport.width : dimensions.width;
+        const renderHeight = targetViewport.height > 0 ? targetViewport.height : dimensions.height;
+
+        canvas.width = renderWidth;
+        canvas.height = renderHeight;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        ctx.clearRect(0, 0, renderWidth, renderHeight);
+        if (imageData instanceof ImageBitmap) {
+            ctx.drawImage(
+                imageData,
+                targetViewport.x,
+                targetViewport.y,
+                targetViewport.width,
+                targetViewport.height,
+                0,
+                0,
+                renderWidth,
+                renderHeight,
+            );
+        } else if (imageData instanceof Blob) {
+            const img = new Image();
+            img.onload = () => {
+                if (canvasRef.current) {
+                    const cCtx = canvasRef.current.getContext('2d');
+                    cCtx?.drawImage(
+                        img,
+                        targetViewport.x,
+                        targetViewport.y,
+                        targetViewport.width,
+                        targetViewport.height,
+                        0,
+                        0,
+                        renderWidth,
+                        renderHeight,
+                    );
+                }
+            };
+            img.src = URL.createObjectURL(imageData);
+        }
+    }, [targetViewport, dimensions, loading]);
 
     return (
         <div
@@ -138,9 +197,16 @@ function MultiframeTile(props: Props): JSX.Element {
                     {selectedObject && (
                         <>
                             {matchResult.status === 'MATCHED' && (
-                                <Tag color={matchResult.isOccluded ? 'warning' : 'cyan'}>
-                                    {matchResult.isOccluded ? 'Occluded' : 'Matched'}
-                                </Tag>
+                                <>
+                                    <Tag color={matchResult.isOccluded ? 'warning' : 'cyan'}>
+                                        {matchResult.isOccluded ? 'Occluded' : 'Matched'}
+                                    </Tag>
+                                    {autoZoomEnabled && targetViewport.width < dimensions.width && (
+                                        <Tag color='geekblue' className='cvat-multiframe-badge'>
+                                            Zoomed
+                                        </Tag>
+                                    )}
+                                </>
                             )}
                             {matchResult.status === 'ABSENT_ON_FRAME' && (
                                 <Tag color='error'>Absent</Tag>
@@ -190,6 +256,7 @@ function MultiframeTile(props: Props): JSX.Element {
                         <MultiframeSvgOverlay
                             width={dimensions.width}
                             height={dimensions.height}
+                            viewport={targetViewport}
                             states={frameStates}
                             matchedClientID={matchResult.matchedClientID}
                             isOccluded={matchResult.isOccluded}

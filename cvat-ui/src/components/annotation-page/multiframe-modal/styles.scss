@@ -56,10 +56,20 @@
     gap: 8px;
 }
 
-.cvat-multiframe-target-info {
+.cvat-multiframe-object-group {
     display: flex;
     align-items: center;
     gap: 8px;
+
+    .cvat-multiframe-autozoom-checkbox {
+        color: #e0e0e0;
+        margin-left: 4px;
+    }
+}
+
+.cvat-multiframe-exit-group {
+    display: flex;
+    align-items: center;
 }
 
 .cvat-multiframe-exit-btn {

@@ -24,6 +24,7 @@ import CursorControl, { Props as CursorControlProps } from './cursor-control';
 import MoveControl, { Props as MoveControlProps } from './move-control';
 import FitControl, { Props as FitControlProps } from './fit-control';
 import ResizeControl, { Props as ResizeControlProps } from './resize-control';
+import MultiframeControl, { Props as MultiframeControlProps } from './multiframe-control';
 import ToolsControl from './tools-control';
 import OpenCVControl from './opencv-control';
 import SnapToolsControl from './snap-tools-control';
@@ -128,6 +129,7 @@ const ObservedMoveControl = ControlVisibilityObserver<MoveControlProps>(MoveCont
 const ObservedRotateControl = ControlVisibilityObserver<RotateControlProps>(RotateControl, 'RotateControl');
 const ObservedFitControl = ControlVisibilityObserver<FitControlProps>(FitControl, 'FitControl');
 const ObservedResizeControl = ControlVisibilityObserver<ResizeControlProps>(ResizeControl, 'ResizeControl');
+const ObservedMultiframeControl = ControlVisibilityObserver<MultiframeControlProps>(MultiframeControl, 'MultiframeControl');
 const ObservedToolsControl = ControlVisibilityObserver(ToolsControl, 'ToolsControl');
 const ObservedOpenCVControl = ControlVisibilityObserver(OpenCVControl, 'OpenCVControl');
 const ObservedSnapToolsControl = ControlVisibilityObserver(SnapToolsControl, 'SnapToolsControl');
@@ -377,6 +379,9 @@ export default function ControlsSideBarComponent(props: Props): JSX.Element {
 
                 <ObservedFitControl canvasInstance={canvasInstance} />
                 <ObservedResizeControl canvasInstance={canvasInstance} activeControl={activeControl} />
+                <ObservedMultiframeControl
+                    shortcut={normalizedKeyMap.OPEN_MULTIFRAME}
+                />
 
                 <hr />
 

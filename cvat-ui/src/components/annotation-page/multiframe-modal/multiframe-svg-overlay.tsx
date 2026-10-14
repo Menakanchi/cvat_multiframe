@@ -3,10 +3,12 @@
 // SPDX-License-Identifier: MIT
 
 import React, { useMemo } from 'react';
+import { Viewport } from './multiframe-utils';
 
 interface Props {
     width: number;
     height: number;
+    viewport?: Viewport;
     states: any[];
     matchedClientID: number | null;
     isOccluded?: boolean;
@@ -45,10 +47,18 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
     const {
         width,
         height,
+        viewport,
         states,
         matchedClientID,
         isOccluded,
     } = props;
+
+    const vpX = viewport?.x ?? 0;
+    const vpY = viewport?.y ?? 0;
+    const vpW = (viewport?.width && viewport.width > 0) ? viewport.width : width;
+    const vpH = (viewport?.height && viewport.height > 0) ? viewport.height : height;
+    const zoomScale = (vpW > 0 && width > 0) ? Math.max(1, width / vpW) : 1;
+    const scaleFactor = 1 / Math.sqrt(zoomScale);
 
     // Cache parsed edges per skeleton label id
     const skeletonEdgesCache = useMemo(() => {
@@ -66,7 +76,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
     return (
         <svg
             className='cvat-multiframe-svg-overlay'
-            viewBox={`0 0 ${width} ${height}`}
+            viewBox={`${vpX} ${vpY} ${vpW} ${vpH}`}
             style={{
                 position: 'absolute',
                 top: 0,
@@ -115,6 +125,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                         y2={y2}
                                         stroke='#ffffff'
                                         strokeWidth={1.5}
+                                        vectorEffect='non-scaling-stroke'
                                         strokeOpacity={0.65}
                                     />
                                 );
@@ -135,10 +146,11 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                             <circle
                                                 cx={x}
                                                 cy={y}
-                                                r={10}
+                                                r={Math.max(4, 10 * scaleFactor)}
                                                 fill='none'
                                                 stroke='#00f0ff'
                                                 strokeWidth={2.5}
+                                                vectorEffect='non-scaling-stroke'
                                                 strokeDasharray={isOccluded ? '3,3' : undefined}
                                                 className='cvat-multiframe-pulsing-highlight'
                                             />
@@ -146,17 +158,18 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                             <circle
                                                 cx={x}
                                                 cy={y}
-                                                r={3.5}
+                                                r={Math.max(2, 3.5 * scaleFactor)}
                                                 fill='#00f0ff'
                                                 stroke='#ffffff'
                                                 strokeWidth={1}
+                                                vectorEffect='non-scaling-stroke'
                                             />
                                             {/* Landmark name label */}
                                             <text
-                                                x={x + 8}
-                                                y={y - 8}
+                                                x={x + 8 * scaleFactor}
+                                                y={y - 8 * scaleFactor}
                                                 fill='#00f0ff'
-                                                fontSize={11}
+                                                fontSize={Math.max(9, Math.round(11 * scaleFactor))}
                                                 fontWeight={700}
                                                 style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}
                                             >
@@ -172,10 +185,11 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                         key={`el_${el.clientID}`}
                                         cx={x}
                                         cy={y}
-                                        r={3}
+                                        r={Math.max(1.8, 3 * scaleFactor)}
                                         fill={el.color || state.color || '#52c41a'}
                                         stroke='#ffffff'
                                         strokeWidth={1}
+                                        vectorEffect='non-scaling-stroke'
                                         opacity={0.85}
                                     />
                                 );
@@ -197,19 +211,28 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                     <circle
                                         cx={x}
                                         cy={y}
-                                        r={10}
+                                        r={Math.max(4, 10 * scaleFactor)}
                                         fill='none'
                                         stroke='#00f0ff'
                                         strokeWidth={2.5}
+                                        vectorEffect='non-scaling-stroke'
                                         strokeDasharray={isOccluded ? '3,3' : undefined}
                                         className='cvat-multiframe-pulsing-highlight'
                                     />
-                                    <circle cx={x} cy={y} r={3.5} fill='#00f0ff' stroke='#fff' strokeWidth={1} />
-                                    <text
-                                        x={x + 8}
-                                        y={y - 8}
+                                    <circle
+                                        cx={x}
+                                        cy={y}
+                                        r={Math.max(2, 3.5 * scaleFactor)}
                                         fill='#00f0ff'
-                                        fontSize={11}
+                                        stroke='#fff'
+                                        strokeWidth={1}
+                                        vectorEffect='non-scaling-stroke'
+                                    />
+                                    <text
+                                        x={x + 8 * scaleFactor}
+                                        y={y - 8 * scaleFactor}
+                                        fill='#00f0ff'
+                                        fontSize={Math.max(9, Math.round(11 * scaleFactor))}
                                         fontWeight={700}
                                         style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}
                                     >
@@ -223,10 +246,11 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                     key={`pts_${state.clientID}_${i}`}
                                     cx={x}
                                     cy={y}
-                                    r={3}
+                                    r={Math.max(1.8, 3 * scaleFactor)}
                                     fill={state.color || '#1890ff'}
                                     stroke='#ffffff'
                                     strokeWidth={1}
+                                    vectorEffect='non-scaling-stroke'
                                     opacity={0.85}
                                 />,
                             );
@@ -249,6 +273,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                             fill='none'
                             stroke={isMatched ? '#00f0ff' : (state.color || '#1890ff')}
                             strokeWidth={isMatched ? 2.5 : 1.5}
+                            vectorEffect='non-scaling-stroke'
                             strokeDasharray={isOccluded ? '4,4' : undefined}
                             opacity={0.8}
                         />
@@ -268,6 +293,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                             fill='none'
                             stroke={isMatched ? '#00f0ff' : (state.color || '#1890ff')}
                             strokeWidth={isMatched ? 2.5 : 1.5}
+                            vectorEffect='non-scaling-stroke'
                             opacity={0.8}
                         />
                     );

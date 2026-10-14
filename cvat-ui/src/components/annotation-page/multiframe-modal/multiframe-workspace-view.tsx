@@ -9,6 +9,9 @@ import Text from 'antd/lib/typography/Text';
 import Tag from 'antd/lib/tag';
 import InputNumber from 'antd/lib/input-number';
 import Alert from 'antd/lib/alert';
+import Spin from 'antd/lib/spin';
+import Select from 'antd/lib/select';
+import Checkbox from 'antd/lib/checkbox';
 import { CloseOutlined, LeftOutlined, RightOutlined } from '@ant-design/icons';
 
 import { CombinedState } from 'reducers';
@@ -18,6 +21,8 @@ import {
     validateFrameRange,
     getBatchFrames,
     getTotalBatches,
+    extractSelectableObjects,
+    SelectableObject,
 } from './multiframe-utils';
 import MultiframeTile from './multiframe-tile';
 
@@ -49,9 +54,10 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         frameNumbers: state.annotation.job.frameNumbers,
     }), shallowEqual);
 
-    const jobStartFrame = Array.isArray(frameNumbers) && frameNumbers.length > 0 ?
+    const hasValidFrames = Array.isArray(frameNumbers) && frameNumbers.length > 0;
+    const jobStartFrame = hasValidFrames ?
         frameNumbers[0] : (jobInstance?.startFrame ?? 0);
-    const jobStopFrame = Array.isArray(frameNumbers) && frameNumbers.length > 0 ?
+    const jobStopFrame = hasValidFrames ?
         frameNumbers[frameNumbers.length - 1] : (jobInstance?.stopFrame ?? 0);
 
     const [rangeStart, setRangeStart] = useState<number>(initialStartFrame ?? jobStartFrame);
@@ -61,76 +67,163 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const [inputStart, setInputStart] = useState<number | null>(initialStartFrame ?? jobStartFrame);
     const [inputEnd, setInputEnd] = useState<number | null>(initialEndFrame ?? jobStopFrame);
 
+    // Object Selector & Auto-Zoom State
+    const [selectedObjectKey, setSelectedObjectKey] = useState<string | null>(null);
+    const [autoZoomEnabled, setAutoZoomEnabled] = useState<boolean>(true);
+    const [allJobStates, setAllJobStates] = useState<any[]>([]);
+    const [initialFetchDone, setInitialFetchDone] = useState<boolean>(false);
+
+    // Fetch initial annotations for job
+    useEffect(() => {
+        let isCancelled = false;
+        async function fetchInitialAnnotations(): Promise<void> {
+            try {
+                if (jobInstance) {
+                    const states = await jobInstance.annotations.get(currentFrame, true, []);
+                    if (!isCancelled && Array.isArray(states)) {
+                        setAllJobStates(states);
+                    }
+                }
+            } catch (_e) {
+                // Ignore gracefully
+            } finally {
+                if (!isCancelled) {
+                    setInitialFetchDone(true);
+                }
+            }
+        }
+        fetchInitialAnnotations();
+        return () => {
+            isCancelled = true;
+        };
+    }, [jobInstance, currentFrame]);
+
+    // Handle frame states reported by tiles as batches load
+    const handleFrameStatesLoaded = useCallback((_frame: number, loadedStates: any[]) => {
+        if (Array.isArray(loadedStates) && loadedStates.length > 0) {
+            setAllJobStates((prev) => {
+                const existingClientIDs = new Set(prev.map((s: any) => s.clientID));
+                const newStates = loadedStates.filter((s: any) => !existingClientIDs.has(s.clientID));
+                if (newStates.length === 0) return prev;
+                return [...prev, ...newStates];
+            });
+        }
+    }, []);
+
+    // Extract deduplicated selectable objects across known states
+    const selectableObjects = useMemo<SelectableObject[]>(() => {
+        const merged = [...allJobStates];
+        if (Array.isArray(activeFrameStates)) {
+            const existingIDs = new Set(merged.map((s: any) => s.clientID));
+            for (const st of activeFrameStates) {
+                if (!existingIDs.has(st.clientID)) {
+                    merged.push(st);
+                }
+            }
+        }
+        return extractSelectableObjects(merged);
+    }, [allJobStates, activeFrameStates]);
+
+    // Clear selection if selected object is removed / no longer exists
+    useEffect(() => {
+        if (initialFetchDone && selectedObjectKey) {
+            const exists = selectableObjects.some((o) => o.key === selectedObjectKey);
+            if (!exists) {
+                setSelectedObjectKey(null);
+            }
+        }
+    }, [initialFetchDone, selectedObjectKey, selectableObjects]);
+
+    // Initialize selection from active canvas selection if not yet chosen
+    useEffect(() => {
+        if (selectedObjectKey === null && (activatedStateID || activatedElementID)) {
+            if (activatedElementID) {
+                const match = selectableObjects.find(
+                    (o) => o.parentID === activatedStateID && o.clientID === activatedElementID,
+                );
+                if (match) {
+                    setSelectedObjectKey(match.key);
+                    return;
+                }
+            }
+            if (activatedStateID) {
+                const match = selectableObjects.find(
+                    (o) => o.clientID === activatedStateID && o.parentID === null,
+                );
+                if (match) {
+                    setSelectedObjectKey(match.key);
+                }
+            }
+        }
+    }, [activatedStateID, activatedElementID, selectableObjects, selectedObjectKey]);
+
+    // Resolve the active selected object instance
+    const selectedObject = useMemo(() => {
+        if (!selectedObjectKey) return null;
+        const matched = selectableObjects.find((o) => o.key === selectedObjectKey);
+        if (!matched) return null;
+        return matched.sourceState;
+    }, [selectedObjectKey, selectableObjects]);
+
     useEffect(() => {
         if (typeof initialStartFrame === 'number') {
             setRangeStart(initialStartFrame);
             setInputStart(initialStartFrame);
+        } else if (hasValidFrames) {
+            setRangeStart(jobStartFrame);
+            setInputStart(jobStartFrame);
         }
         if (typeof initialEndFrame === 'number') {
             setRangeEnd(initialEndFrame);
             setInputEnd(initialEndFrame);
+        } else if (hasValidFrames) {
+            setRangeEnd(jobStopFrame);
+            setInputEnd(jobStopFrame);
         }
-    }, [initialStartFrame, initialEndFrame]);
+    }, [initialStartFrame, initialEndFrame, hasValidFrames, jobStartFrame, jobStopFrame]);
 
-    // Initial batch index centered on current frame
+    // Initial batch index centered on current frame if verified
     useEffect(() => {
         const curStart = initialStartFrame ?? rangeStart;
         const curEnd = initialEndFrame ?? rangeEnd;
-        if (Array.isArray(frameNumbers) && frameNumbers.length > 0) {
+        if (hasValidFrames) {
             const framesInRange = frameNumbers.filter((f) => f >= curStart && f <= curEnd);
-            const activeIdxInRange = framesInRange.indexOf(currentFrame);
+            const isCurrentVerified = frameNumbers.includes(currentFrame);
+            const activeIdxInRange = isCurrentVerified ? framesInRange.indexOf(currentFrame) : -1;
             const initialBatch = activeIdxInRange !== -1 ?
                 Math.floor(activeIdxInRange / BATCH_SIZE) : 0;
             setBatchIndex(initialBatch);
         } else {
-            const initialBatch = Math.floor(Math.max(0, currentFrame - curStart) / BATCH_SIZE);
-            setBatchIndex(initialBatch);
+            setBatchIndex(0);
         }
-    }, [initialStartFrame, initialEndFrame]);
-
-    // Resolve the active landmark or track selected by the annotator on the main canvas
-    const selectedObject = useMemo(() => {
-        if (!activatedStateID && !activatedElementID) return null;
-        if (!Array.isArray(activeFrameStates) || activeFrameStates.length === 0) return null;
-
-        const parentState = activeFrameStates.find((s: any) => s.clientID === activatedStateID);
-        if (!parentState) return null;
-
-        if (activatedElementID && parentState.shapeType === 'skeleton' && Array.isArray(parentState.elements)) {
-            const element = parentState.elements.find((el: any) => el.clientID === activatedElementID);
-            if (element) {
-                return element;
-            }
-        }
-        return parentState;
-    }, [activatedStateID, activatedElementID, activeFrameStates]);
+    }, [initialStartFrame, initialEndFrame, hasValidFrames, currentFrame]);
 
     const validation = validateFrameRange(inputStart, inputEnd, jobStartFrame, jobStopFrame, frameNumbers);
     const totalBatches = getTotalBatches(rangeStart, rangeEnd, BATCH_SIZE, frameNumbers);
     const batchFrames = getBatchFrames(batchIndex, rangeStart, rangeEnd, BATCH_SIZE, frameNumbers);
 
     const onUpdateRange = useCallback(() => {
-        if (validation.isValid && inputStart !== null && inputEnd !== null) {
+        if (validation.isValid && hasValidFrames && inputStart !== null && inputEnd !== null) {
             setRangeStart(inputStart);
             setRangeEnd(inputEnd);
             setBatchIndex(0);
         }
-    }, [validation.isValid, inputStart, inputEnd]);
+    }, [validation.isValid, hasValidFrames, inputStart, inputEnd]);
 
     const onPrevBatch = useCallback(() => {
         setBatchIndex((idx) => Math.max(0, idx - 1));
     }, []);
 
     const onNextBatch = useCallback(() => {
-        setBatchIndex((idx) => Math.min(totalBatches - 1, idx + 1));
+        setBatchIndex((idx) => Math.min(Math.max(0, totalBatches - 1), idx + 1));
     }, [totalBatches]);
 
     const handleNavigateToFrame = useCallback((frame: number) => {
         dispatch(changeFrameAsync(frame));
     }, [dispatch]);
 
-    const batchStartFrame = batchFrames.length > 0 ? batchFrames[0] : rangeStart;
-    const batchEndFrame = batchFrames.length > 0 ? batchFrames[batchFrames.length - 1] : rangeEnd;
+    const batchStartFrame = batchFrames.length > 0 ? batchFrames[0] : (hasValidFrames ? rangeStart : '-');
+    const batchEndFrame = batchFrames.length > 0 ? batchFrames[batchFrames.length - 1] : (hasValidFrames ? rangeEnd : '-');
 
     return (
         <div className='cvat-multiframe-workspace-view'>
@@ -162,7 +255,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     />
                     <Button
                         size='small'
-                        disabled={!validation.isValid}
+                        disabled={!validation.isValid || !hasValidFrames}
                         onClick={onUpdateRange}
                         className='cvat-multiframe-apply-range-btn'
                     >
@@ -182,7 +275,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         Prev Batch
                     </Button>
                     <Text strong className='cvat-multiframe-batch-indicator'>
-                        {`Batch ${batchIndex + 1} of ${Math.max(1, totalBatches)} (Frames #${batchStartFrame} - #${batchEndFrame})`}
+                        {`Batch ${totalBatches === 0 ? 0 : batchIndex + 1} of ${Math.max(1, totalBatches)} (Frames #${batchStartFrame} - #${batchEndFrame})`}
                     </Text>
                     <Button
                         size='small'
@@ -195,22 +288,36 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     </Button>
                 </div>
 
-                {/* Right: Target Landmark & Exit button */}
-                <div className='cvat-multiframe-target-info'>
-                    <Text strong>Target: </Text>
-                    {selectedObject ? (
-                        <Tag color='cyan'>
-                            {selectedObject.parentID !== null && selectedObject.parentID !== undefined ? (
-                                `Skeleton #${selectedObject.parentID} [${selectedObject.label?.name || 'Landmark'}]`
-                            ) : (
-                                `Track #${selectedObject.clientID} [${selectedObject.label?.name || 'Object'}]`
-                            )}
-                        </Tag>
-                    ) : (
-                        <Text type='secondary'>
-                            No landmark selected
-                        </Text>
-                    )}
+                {/* Object Selector & Auto-Zoom Controls */}
+                <div className='cvat-multiframe-object-group'>
+                    <Text strong>Object:</Text>
+                    <Select
+                        size='small'
+                        placeholder='Select object...'
+                        value={selectedObjectKey}
+                        onChange={(val: string | null) => setSelectedObjectKey(val || null)}
+                        allowClear
+                        style={{ minWidth: 200, maxWidth: 300 }}
+                        className='cvat-multiframe-object-select'
+                        disabled={selectableObjects.length === 0}
+                    >
+                        {selectableObjects.map((obj) => (
+                            <Select.Option key={obj.key} value={obj.key}>
+                                {obj.displayText}
+                            </Select.Option>
+                        ))}
+                    </Select>
+                    <Checkbox
+                        checked={autoZoomEnabled}
+                        onChange={(e) => setAutoZoomEnabled(e.target.checked)}
+                        className='cvat-multiframe-autozoom-checkbox'
+                    >
+                        Auto-Zoom
+                    </Checkbox>
+                </div>
+
+                {/* Right: Exit button */}
+                <div className='cvat-multiframe-exit-group'>
                     <Button
                         type='primary'
                         danger
@@ -235,19 +342,34 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                 />
             )}
 
-            {/* Multi-Frame Grid of Tiles */}
-            <div className='cvat-multiframe-grid'>
-                {batchFrames.map((frame) => (
-                    <MultiframeTile
-                        key={`frame_tile_${frame}`}
-                        frameNumber={frame}
-                        jobInstance={jobInstance}
-                        isActiveFrame={frame === currentFrame}
-                        selectedObject={selectedObject}
-                        onNavigateToFrame={handleNavigateToFrame}
-                    />
-                ))}
-            </div>
+            {/* Multi-Frame Grid of Tiles or Loading State */}
+            {!hasValidFrames ? (
+                <div style={{ padding: 40, textAlign: 'center', width: '100%' }}>
+                    <Spin size='large' />
+                    <div style={{ marginTop: 16 }}>
+                        <Text type='secondary'>Loading job frame numbers...</Text>
+                    </div>
+                </div>
+            ) : batchFrames.length === 0 ? (
+                <div style={{ padding: 40, textAlign: 'center', width: '100%' }}>
+                    <Text type='secondary'>No valid frames found in range [{rangeStart} .. {rangeEnd}].</Text>
+                </div>
+            ) : (
+                <div className='cvat-multiframe-grid'>
+                    {batchFrames.map((frame) => (
+                        <MultiframeTile
+                            key={`frame_tile_${frame}`}
+                            frameNumber={frame}
+                            jobInstance={jobInstance}
+                            isActiveFrame={frame === currentFrame}
+                            selectedObject={selectedObject}
+                            autoZoomEnabled={autoZoomEnabled}
+                            onNavigateToFrame={handleNavigateToFrame}
+                            onFrameStatesLoaded={handleFrameStatesLoaded}
+                        />
+                    ))}
+                </div>
+            )}
         </div>
     );
 }
