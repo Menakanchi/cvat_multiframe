@@ -12,11 +12,13 @@ import Alert from 'antd/lib/alert';
 import Spin from 'antd/lib/spin';
 import Select from 'antd/lib/select';
 import Checkbox from 'antd/lib/checkbox';
-import { CloseOutlined, LeftOutlined, RightOutlined, SaveOutlined } from '@ant-design/icons';
+import { CloseOutlined, LeftOutlined, RightOutlined, SaveOutlined, AppstoreOutlined } from '@ant-design/icons';
 
 import { CombinedState } from 'reducers';
 import { switchShowMultiframeModal, changeFrameAsync, saveAnnotationsAsync } from 'actions/annotation-actions';
 import { shallowEqual } from 'utils/redux';
+import CanvasLayout from 'components/annotation-page/canvas/grid-layout/canvas-layout';
+import BrushTools from 'components/annotation-page/canvas/views/canvas2d/brush-tools';
 import {
     validateFrameRange,
     getBatchFrames,
@@ -73,8 +75,10 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const [selectedObjectKey, setSelectedObjectKey] = useState<string | null>(null);
     const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>('all');
     const [autoZoomEnabled, setAutoZoomEnabled] = useState<boolean>(true);
+    const [autoFollowEnabled, setAutoFollowEnabled] = useState<boolean>(true);
     const [allJobStates, setAllJobStates] = useState<any[]>([]);
     const [initialFetchDone, setInitialFetchDone] = useState<boolean>(false);
+    const [zoomedFrame, setZoomedFrame] = useState<number | null>(null);
 
     // Fetch initial annotations for job
     useEffect(() => {
@@ -230,6 +234,46 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         dispatch(changeFrameAsync(frame));
     }, [dispatch]);
 
+    const handleZoomFrame = useCallback((frame: number) => {
+        setZoomedFrame(frame);
+        dispatch(changeFrameAsync(frame));
+        setTimeout(() => {
+            window.dispatchEvent(new Event('resize'));
+        }, 50);
+    }, [dispatch]);
+
+    const handleReturnToGrid = useCallback(() => {
+        setZoomedFrame(null);
+        setTimeout(() => {
+            window.dispatchEvent(new Event('resize'));
+        }, 50);
+    }, []);
+
+    // Sync zoomedFrame with currentFrame if navigation occurs inside full-screen view
+    useEffect(() => {
+        if (zoomedFrame !== null && currentFrame !== zoomedFrame) {
+            setZoomedFrame(currentFrame);
+            const computedBatch = Math.floor((currentFrame - rangeStart) / BATCH_SIZE);
+            if (computedBatch >= 0 && computedBatch < totalBatches && computedBatch !== batchIndex) {
+                setBatchIndex(computedBatch);
+            }
+        }
+    }, [currentFrame, zoomedFrame, rangeStart, totalBatches, batchIndex]);
+
+    // Escape key returns to Multi-Frame grid
+    useEffect(() => {
+        if (zoomedFrame === null) return undefined;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                handleReturnToGrid();
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [zoomedFrame, handleReturnToGrid]);
+
     const handleTileSelectObject = useCallback((targetState: any) => {
         if (!targetState) return;
         const targetKey = targetState.objectType === 'track' ? `track_${targetState.clientID}` : `shape_${targetState.clientID}`;
@@ -243,9 +287,102 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const batchEndFrame = batchFrames.length > 0 ? batchFrames[batchFrames.length - 1] : (hasValidFrames ? rangeEnd : '-');
 
     return (
-        <div className='cvat-multiframe-workspace-view'>
-            {/* Header Controls Bar */}
-            <div className='cvat-multiframe-controls-bar'>
+        <div className={`cvat-multiframe-workspace-view ${zoomedFrame !== null ? 'cvat-multiframe-workspace-fullscreen' : ''}`}>
+            {zoomedFrame !== null ? (
+                <div className='cvat-multiframe-fullscreen-container'>
+                    {/* Full-Screen Top Banner */}
+                    <div className='cvat-multiframe-fullscreen-banner'>
+                        <div className='cvat-multiframe-fullscreen-banner-left'>
+                            <Button
+                                type='primary'
+                                icon={<AppstoreOutlined />}
+                                onClick={handleReturnToGrid}
+                                className='cvat-multiframe-return-btn'
+                            >
+                                Return to Multi-Frame
+                            </Button>
+                            <Text strong className='cvat-multiframe-fullscreen-title'>
+                                {`Frame #${zoomedFrame} — Full-Size Annotation View`}
+                            </Text>
+                            <Tag color='geekblue' className='cvat-multiframe-badge'>
+                                {`Batch ${batchIndex + 1}/${totalBatches}`}
+                            </Tag>
+                            <Tag className='cvat-multiframe-badge'>
+                                {`Range: [${rangeStart} .. ${rangeEnd}]`}
+                            </Tag>
+                            {selectedObject && (
+                                <Tag color='cyan' className='cvat-multiframe-badge'>
+                                    {`Object: ${selectableObjects.find((o) => o.key === selectedObjectKey)?.displayText || 'Selected'}`}
+                                </Tag>
+                            )}
+                        </div>
+                        <div className='cvat-multiframe-fullscreen-banner-right'>
+                            <Button
+                                size='small'
+                                icon={<LeftOutlined />}
+                                disabled={batchFrames.indexOf(zoomedFrame) <= 0}
+                                onClick={() => {
+                                    const idx = batchFrames.indexOf(zoomedFrame);
+                                    if (idx > 0) {
+                                        const prevF = batchFrames[idx - 1];
+                                        handleZoomFrame(prevF);
+                                    }
+                                }}
+                                style={{ marginRight: 6 }}
+                                title='Previous frame in batch'
+                            >
+                                Prev Frame
+                            </Button>
+                            <Button
+                                size='small'
+                                icon={<RightOutlined />}
+                                disabled={batchFrames.indexOf(zoomedFrame) >= batchFrames.length - 1}
+                                onClick={() => {
+                                    const idx = batchFrames.indexOf(zoomedFrame);
+                                    if (idx >= 0 && idx < batchFrames.length - 1) {
+                                        const nextF = batchFrames[idx + 1];
+                                        handleZoomFrame(nextF);
+                                    }
+                                }}
+                                style={{ marginRight: 12 }}
+                                title='Next frame in batch'
+                            >
+                                Next Frame
+                            </Button>
+                            <Button
+                                type='primary'
+                                size='small'
+                                icon={<SaveOutlined />}
+                                loading={isSaving}
+                                disabled={isSaving}
+                                onClick={() => dispatch(saveAnnotationsAsync())}
+                                className='cvat-multiframe-save-btn'
+                                style={{ marginRight: 8, background: '#1890ff', borderColor: '#1890ff' }}
+                            >
+                                {isSaving ? 'Saving...' : 'Save'}
+                            </Button>
+                            <Button
+                                type='default'
+                                danger
+                                size='small'
+                                icon={<CloseOutlined />}
+                                onClick={onClose}
+                                title='Exit Multi-Frame'
+                            >
+                                Exit Multi-Frame
+                            </Button>
+                        </div>
+                    </div>
+                    {/* CVAT Native Canvas Layout */}
+                    <div className='cvat-multiframe-fullscreen-canvas-wrapper'>
+                        <CanvasLayout />
+                        <BrushTools />
+                    </div>
+                </div>
+            ) : (
+                <>
+                    {/* Header Controls Bar */}
+                    <div className='cvat-multiframe-controls-bar'>
                 {/* Left: Range and Navigation */}
                 <div className='cvat-multiframe-range-group'>
                     <Text strong>Range:</Text>
@@ -360,6 +497,13 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     >
                         Auto-Zoom
                     </Checkbox>
+                    <Checkbox
+                        checked={autoFollowEnabled}
+                        onChange={(e) => setAutoFollowEnabled(e.target.checked)}
+                        className='cvat-multiframe-autofollow-checkbox'
+                    >
+                        Auto-Follow
+                    </Checkbox>
                 </div>
 
                 {/* Right: Save and Exit buttons */}
@@ -427,12 +571,16 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                             isActiveFrame={frame === currentFrame}
                             selectedObject={selectedObject}
                             autoZoomEnabled={autoZoomEnabled}
+                            autoFollowEnabled={autoFollowEnabled}
                             onNavigateToFrame={handleNavigateToFrame}
+                            onZoomFrame={handleZoomFrame}
                             onFrameStatesLoaded={handleFrameStatesLoaded}
                             onSelectObject={handleTileSelectObject}
                         />
                     ))}
                 </div>
+            )}
+                </>
             )}
         </div>
     );

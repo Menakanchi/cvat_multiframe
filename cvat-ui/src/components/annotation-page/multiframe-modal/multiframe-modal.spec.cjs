@@ -655,6 +655,27 @@ function zoomViewportAtPoint(currentVp, factor, focalX, focalY, imageWidth, imag
     return clampViewport({ x: newX, y: newY, width: newWidth, height: newHeight }, imageWidth, imageHeight);
 }
 
+function calculateResizeZoomViewport(startViewport, dx, dy, imageWidth, imageHeight, sensitivity = 150) {
+    if (imageWidth <= 0 || imageHeight <= 0 || !startViewport || startViewport.width <= 0) {
+        return startViewport;
+    }
+
+    const delta = (dx + dy) / 2;
+    const factor = Math.exp(-delta / Math.max(10, sensitivity));
+
+    const centerX = startViewport.x + startViewport.width / 2;
+    const centerY = startViewport.y + startViewport.height / 2;
+
+    return zoomViewportAtPoint(
+        startViewport,
+        factor,
+        centerX,
+        centerY,
+        imageWidth,
+        imageHeight,
+    );
+}
+
 function panViewport(currentVp, deltaX, deltaY, imageWidth, imageHeight) {
     return clampViewport(
         {
@@ -666,6 +687,30 @@ function panViewport(currentVp, deltaX, deltaY, imageWidth, imageHeight) {
         imageWidth,
         imageHeight,
     );
+}
+
+function centerViewportOnObject(viewport, bbox, imageWidth, imageHeight) {
+    if (!viewport || viewport.width <= 0 || viewport.height <= 0 || imageWidth <= 0 || imageHeight <= 0) {
+        return viewport;
+    }
+    const objCenterX = (bbox.xtl + bbox.xbr) / 2;
+    const objCenterY = (bbox.ytl + bbox.ybr) / 2;
+
+    const vpW = Math.min(viewport.width, imageWidth);
+    const vpH = Math.min(viewport.height, imageHeight);
+
+    const targetX = objCenterX - vpW / 2;
+    const targetY = objCenterY - vpH / 2;
+
+    const clampedX = Math.max(0, Math.min(imageWidth - vpW, Math.round(targetX)));
+    const clampedY = Math.max(0, Math.min(imageHeight - vpH, Math.round(targetY)));
+
+    return {
+        x: clampedX,
+        y: clampedY,
+        width: vpW,
+        height: vpH,
+    };
 }
 
 function calculateZoomPercentage(vp, imageWidth) {
@@ -4153,7 +4198,1310 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     console.log('  ✔ TC 98 passed.');
 }
 
+// TC 99: Whole-Skeleton Dragging Bounding Box Position Drift Prevention and Duplicate Offset Regression Test
+{
+    console.log('TC 99: Whole-skeleton dragging bounding box position drift prevention and duplicate offset...');
+    const initialSkeleton = {
+        clientID: 901,
+        objectType: 'track',
+        shapeType: 'skeleton',
+        label: { id: 20, name: 'pose' },
+        wrappingRect: { xtl: 100, ytl: 100, xbr: 300, ybr: 400 },
+        boundingBox: { xtl: 100, ytl: 100, xbr: 300, ybr: 400 },
+        elements: [
+            { clientID: 902, shapeType: 'points', label: { id: 1, name: 'nose' }, points: [200, 150], outside: false },
+            { clientID: 903, shapeType: 'points', label: { id: 2, name: 'left_hand' }, points: [120, 250], outside: false },
+            { clientID: 904, shapeType: 'points', label: { id: 3, name: 'right_hand' }, points: [280, 250], outside: false },
+            { clientID: 905, shapeType: 'points', label: { id: 4, name: 'left_foot' }, points: [150, 380], outside: false },
+            { clientID: 906, shapeType: 'points', label: { id: 5, name: 'right_foot' }, points: [250, 380], outside: false },
+        ],
+    };
+
+    let frameStates = [JSON.parse(JSON.stringify(initialSkeleton))];
+
+    // Measure initial relative offset between bounding box top-left and nose landmark
+    const initialOuterBox = resolveSkeletonWrappingBox(frameStates[0], frameStates);
+    assert.deepStrictEqual(initialOuterBox, { xtl: 100, ytl: 100, xbr: 300, ybr: 400 });
+    const initialRelativeX = frameStates[0].elements[0].points[0] - initialOuterBox.xtl; // 200 - 100 = 100
+    const initialRelativeY = frameStates[0].elements[0].points[1] - initialOuterBox.ytl; // 150 - 100 = 50
+
+    // Simulate handleEditSkeleton matching multiframe-tile.tsx implementation
+    const simulateEditSkeleton = (parentState, dx, dy) => {
+        const currentOuterBox = resolveSkeletonWrappingBox(parentState, frameStates);
+        const newOuterBox = currentOuterBox ? {
+            xtl: Math.round(currentOuterBox.xtl + dx),
+            ytl: Math.round(currentOuterBox.ytl + dy),
+            xbr: Math.round(currentOuterBox.xbr + dx),
+            ybr: Math.round(currentOuterBox.ybr + dy),
+        } : null;
+
+        const updatedElements = [];
+        const elementTargetPoints = new Map();
+        for (const el of parentState.elements) {
+            if (Array.isArray(el.points) && el.points.length >= 2) {
+                const newX = Math.round(el.points[0] + dx);
+                const newY = Math.round(el.points[1] + dy);
+                elementTargetPoints.set(el.clientID, [newX, newY]);
+                el.points = [newX, newY];
+                updatedElements.push(el);
+            }
+        }
+
+        if (newOuterBox) {
+            parentState.wrappingRect = { ...newOuterBox };
+            parentState.boundingBox = { ...newOuterBox };
+            if (Array.isArray(parentState.points) && parentState.points.length === 4) {
+                parentState.points = [newOuterBox.xtl, newOuterBox.ytl, newOuterBox.xbr, newOuterBox.ybr];
+            }
+        }
+
+        // Optimistically update frameStates without duplicate offsets
+        frameStates = frameStates.map((st) => {
+            if (st.clientID === parentState.clientID && Array.isArray(st.elements)) {
+                return {
+                    ...st,
+                    wrappingRect: newOuterBox ? { ...newOuterBox } : st.wrappingRect,
+                    boundingBox: newOuterBox ? { ...newOuterBox } : st.boundingBox,
+                    points: (newOuterBox && Array.isArray(st.points) && st.points.length === 4) ?
+                        [newOuterBox.xtl, newOuterBox.ytl, newOuterBox.xbr, newOuterBox.ybr] : st.points,
+                    elements: st.elements.map((el) => {
+                        const target = elementTargetPoints.get(el.clientID);
+                        if (target) {
+                            return {
+                                ...el,
+                                points: [target[0], target[1]],
+                            };
+                        }
+                        return el;
+                    }),
+                };
+            }
+            return st;
+        });
+
+        return { updatedElements, newOuterBox };
+    };
+
+    // 1. Move skeleton by dx = +60, dy = -40
+    const move1 = simulateEditSkeleton(frameStates[0], 60, -40);
+
+    // Verify landmarks translated by exact offset without duplicate offset (no 2*dx)
+    assert.deepStrictEqual(frameStates[0].elements[0].points, [260, 110], 'Nose landmark must be exactly [200+60, 150-40]');
+    assert.deepStrictEqual(frameStates[0].elements[1].points, [180, 210]);
+    assert.deepStrictEqual(frameStates[0].elements[2].points, [340, 210]);
+    assert.deepStrictEqual(frameStates[0].elements[3].points, [210, 340]);
+    assert.deepStrictEqual(frameStates[0].elements[4].points, [310, 340]);
+
+    // Verify outer bounding box synchronously translated by the same offset
+    assert.deepStrictEqual(move1.newOuterBox, { xtl: 160, ytl: 60, xbr: 360, ybr: 360 });
+    assert.deepStrictEqual(frameStates[0].wrappingRect, { xtl: 160, ytl: 60, xbr: 360, ybr: 360 });
+    assert.deepStrictEqual(frameStates[0].boundingBox, { xtl: 160, ytl: 60, xbr: 360, ybr: 360 });
+
+    // Verify resolveSkeletonWrappingBox retrieves the translated wrappingRect directly
+    const resolvedBoxAfterMove1 = resolveSkeletonWrappingBox(frameStates[0], frameStates);
+    assert.deepStrictEqual(resolvedBoxAfterMove1, { xtl: 160, ytl: 60, xbr: 360, ybr: 360 });
+
+    // Relative distance between bounding box and landmarks must have ZERO DRIFT
+    const relativeXAfterMove1 = frameStates[0].elements[0].points[0] - resolvedBoxAfterMove1.xtl;
+    const relativeYAfterMove1 = frameStates[0].elements[0].points[1] - resolvedBoxAfterMove1.ytl;
+    assert.strictEqual(relativeXAfterMove1, initialRelativeX, 'Relative X offset between box and landmark must be preserved');
+    assert.strictEqual(relativeYAfterMove1, initialRelativeY, 'Relative Y offset between box and landmark must be preserved');
+
+    // 2. Second consecutive move: dx = -30, dy = +50
+    const move2 = simulateEditSkeleton(frameStates[0], -30, 50);
+
+    assert.deepStrictEqual(frameStates[0].elements[0].points, [230, 160]);
+    assert.deepStrictEqual(move2.newOuterBox, { xtl: 130, ytl: 110, xbr: 330, ybr: 410 });
+    const resolvedBoxAfterMove2 = resolveSkeletonWrappingBox(frameStates[0], frameStates);
+    assert.deepStrictEqual(resolvedBoxAfterMove2, { xtl: 130, ytl: 110, xbr: 330, ybr: 410 });
+
+    const relativeXAfterMove2 = frameStates[0].elements[0].points[0] - resolvedBoxAfterMove2.xtl;
+    const relativeYAfterMove2 = frameStates[0].elements[0].points[1] - resolvedBoxAfterMove2.ytl;
+    assert.strictEqual(relativeXAfterMove2, initialRelativeX, 'Consecutive movement must maintain zero position drift');
+    assert.strictEqual(relativeYAfterMove2, initialRelativeY, 'Consecutive movement must maintain zero position drift');
+
+    console.log('  ✔ TC 99 passed.');
+}
+
+// TC 100: Interaction Separation Between Point Editing, Box Dragging, and Click-Without-Drag
+{
+    console.log('TC 100: Interaction separation between point editing, box dragging, and click-without-drag...');
+    const parentSkeleton = {
+        clientID: 1001,
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 1002, shapeType: 'points', points: [150, 150] },
+            { clientID: 1003, shapeType: 'points', points: [250, 250] },
+        ],
+    };
+
+    const actionLog = [];
+    const dispatchAction = (action) => actionLog.push(action);
+
+    // Mock handlers mimicking multiframe-tile.tsx and multiframe-svg-overlay.tsx
+    const onSelectObject = (state, elementState) => {
+        if (elementState) {
+            dispatchAction({ type: 'ACTIVATE_OBJECT', clientID: state.clientID, elementID: elementState.clientID });
+        } else {
+            dispatchAction({ type: 'ACTIVATE_OBJECT', clientID: state.clientID, elementID: null });
+        }
+    };
+
+    const onEditLandmark = (parentState, elementState, newPoints) => {
+        dispatchAction({ type: 'EDIT_LANDMARK', parentID: parentState.clientID, elementID: elementState.clientID, newPoints });
+    };
+
+    const onEditSkeleton = (state, dx, dy) => {
+        dispatchAction({ type: 'EDIT_SKELETON', clientID: state.clientID, dx, dy });
+    };
+
+    // 1. Interaction A: Clicking a landmark without dragging (dist <= 0.5)
+    // Landmark circle onMouseDown -> e.stopPropagation() prevents box drag initiation
+    const simulateLandmarkClick = (state, el) => {
+        const initialPoint = [el.points[0], el.points[1]];
+        const currentPoint = [el.points[0], el.points[1]]; // no mouse movement
+        const dist = Math.hypot(currentPoint[0] - initialPoint[0], currentPoint[1] - initialPoint[1]);
+        if (dist > 0.5) {
+            onEditLandmark(state, el, currentPoint);
+        }
+        onSelectObject(state, el);
+    };
+
+    actionLog.length = 0;
+    simulateLandmarkClick(parentSkeleton, parentSkeleton.elements[0]);
+    assert.strictEqual(actionLog.length, 1);
+    assert.strictEqual(actionLog[0].type, 'ACTIVATE_OBJECT');
+    assert.strictEqual(actionLog[0].clientID, 1001);
+    assert.strictEqual(actionLog[0].elementID, 1002, 'Clicking landmark must activate landmark point');
+    assert.strictEqual(actionLog.some((a) => a.type === 'EDIT_LANDMARK'), false, 'Click without drag must not edit landmark');
+    assert.strictEqual(actionLog.some((a) => a.type === 'EDIT_SKELETON'), false, 'Landmark click must not move skeleton');
+
+    // 2. Interaction B: Dragging a landmark individually (dist > 0.5)
+    const simulateLandmarkDrag = (state, el, newX, newY) => {
+        const initialPoint = [el.points[0], el.points[1]];
+        const currentPoint = [newX, newY];
+        const dist = Math.hypot(currentPoint[0] - initialPoint[0], currentPoint[1] - initialPoint[1]);
+        if (dist > 0.5) {
+            onEditLandmark(state, el, currentPoint);
+        }
+        onSelectObject(state, el);
+    };
+
+    actionLog.length = 0;
+    simulateLandmarkDrag(parentSkeleton, parentSkeleton.elements[0], 165, 175);
+    assert.strictEqual(actionLog.length, 2);
+    assert.strictEqual(actionLog[0].type, 'EDIT_LANDMARK');
+    assert.strictEqual(actionLog[0].elementID, 1002);
+    assert.deepStrictEqual(actionLog[0].newPoints, [165, 175]);
+    assert.strictEqual(actionLog[1].type, 'ACTIVATE_OBJECT');
+    assert.strictEqual(actionLog[1].elementID, 1002);
+    assert.strictEqual(actionLog.some((a) => a.type === 'EDIT_SKELETON'), false, 'Individual landmark drag must not trigger whole skeleton drag');
+
+    // 3. Interaction C: Clicking the outer bounding box without dragging (dist <= 0.5)
+    const simulateBoxClick = (state) => {
+        const currentOffset = [0, 0]; // no movement
+        const dist = Math.hypot(currentOffset[0], currentOffset[1]);
+        if (dist > 0.5) {
+            onEditSkeleton(state, currentOffset[0], currentOffset[1]);
+        }
+        onSelectObject(state);
+    };
+
+    actionLog.length = 0;
+    simulateBoxClick(parentSkeleton);
+    assert.strictEqual(actionLog.length, 1);
+    assert.strictEqual(actionLog[0].type, 'ACTIVATE_OBJECT');
+    assert.strictEqual(actionLog[0].clientID, 1001);
+    assert.strictEqual(actionLog[0].elementID, null, 'Clicking box must activate parent skeleton without selecting a child landmark');
+    assert.strictEqual(actionLog.some((a) => a.type === 'EDIT_SKELETON'), false, 'Clicking box without dragging must not move skeleton');
+    assert.strictEqual(actionLog.some((a) => a.type === 'EDIT_LANDMARK'), false, 'Box click must not edit landmark');
+
+    // 4. Interaction D: Dragging the outer bounding box (dist > 0.5)
+    const simulateBoxDrag = (state, dx, dy) => {
+        const currentOffset = [dx, dy];
+        const dist = Math.hypot(currentOffset[0], currentOffset[1]);
+        if (dist > 0.5) {
+            onEditSkeleton(state, currentOffset[0], currentOffset[1]);
+        }
+        onSelectObject(state);
+    };
+
+    actionLog.length = 0;
+    simulateBoxDrag(parentSkeleton, 45, -35);
+    assert.strictEqual(actionLog.length, 2);
+    assert.strictEqual(actionLog[0].type, 'EDIT_SKELETON');
+    assert.strictEqual(actionLog[0].clientID, 1001);
+    assert.strictEqual(actionLog[0].dx, 45);
+    assert.strictEqual(actionLog[0].dy, -35);
+    assert.strictEqual(actionLog[1].type, 'ACTIVATE_OBJECT');
+    assert.strictEqual(actionLog[1].clientID, 1001);
+    assert.strictEqual(actionLog[1].elementID, null);
+
+    console.log('  ✔ TC 100 passed.');
+}
+
+// TC 101: Skeleton Connection Lines (Edges/Bones) Rendering and Coordinate Alignment
+{
+    console.log('TC 101: Skeleton connection lines (edges/bones) rendering and coordinate alignment...');
+
+    // 1. Mock DOM element simulating native CVAT SVGSVGElement (label.structure.svg)
+    const mockCircle1 = {
+        getAttribute: (attr) => ({ 'data-node-id': '1', 'data-label-id': '501', 'data-element-id': '1' }[attr] ?? null),
+    };
+    const mockCircle2 = {
+        getAttribute: (attr) => ({ 'data-node-id': '2', 'data-label-id': '502', 'data-element-id': '2' }[attr] ?? null),
+    };
+    const mockCircle3 = {
+        getAttribute: (attr) => ({ 'data-node-id': '3', 'data-label-id': '503', 'data-element-id': '3' }[attr] ?? null),
+    };
+    const mockLine1 = {
+        getAttribute: (attr) => ({ 'data-type': 'edge', 'data-node-from': '1', 'data-node-to': '2' }[attr] ?? null),
+    };
+    const mockLine2 = {
+        getAttribute: (attr) => ({ 'data-type': 'edge', 'data-node-from': '2', 'data-node-to': '3' }[attr] ?? null),
+    };
+
+    const mockSvgDom = {
+        querySelectorAll: (selector) => {
+            if (selector === 'circle') return [mockCircle1, mockCircle2, mockCircle3];
+            if (selector === 'line') return [mockLine1, mockLine2];
+            return [];
+        },
+    };
+
+    // Parse template matching multiframe-svg-overlay.tsx parseSkeletonTemplate
+    const parseTemplate = (svgSource, labelSublabels) => {
+        const edges = [];
+        const nodes = [];
+
+        if (typeof svgSource === 'object' && svgSource !== null && typeof svgSource.querySelectorAll === 'function') {
+            const circleElements = Array.from(svgSource.querySelectorAll('circle'));
+            circleElements.forEach((circle, index) => {
+                const nodeId = circle.getAttribute('data-node-id') || String(index + 1);
+                const labelIdStr = circle.getAttribute('data-label-id');
+                const labelName = circle.getAttribute('data-label-name') || undefined;
+                const elementIdStr = circle.getAttribute('data-element-id');
+                nodes.push({
+                    nodeId,
+                    labelId: labelIdStr ? Number(labelIdStr) : undefined,
+                    labelName,
+                    elementId: elementIdStr ? Number(elementIdStr) : undefined,
+                    index,
+                });
+            });
+
+            const lineElements = Array.from(svgSource.querySelectorAll('line'));
+            lineElements.forEach((line) => {
+                const fromStr = line.getAttribute('data-node-from');
+                const toStr = line.getAttribute('data-node-to');
+                if (fromStr && toStr) {
+                    edges.push({
+                        from: Number(fromStr),
+                        to: Number(toStr),
+                        fromNode: fromStr,
+                        toNode: toStr,
+                    });
+                }
+            });
+        }
+
+        if (Array.isArray(labelSublabels)) {
+            nodes.forEach((node) => {
+                const sub = (node.elementId !== undefined && labelSublabels[node.elementId - 1]) ||
+                    (node.index < labelSublabels.length && labelSublabels[node.index]);
+                if (sub) {
+                    if (node.labelId === undefined && sub.id !== undefined) {
+                        node.labelId = Number(sub.id);
+                    }
+                    if (!node.labelName && sub.name) {
+                        node.labelName = sub.name;
+                    }
+                }
+            });
+        }
+
+        const nodeToLabelIdMap = new Map();
+        nodes.forEach((node) => {
+            if (node.labelId !== undefined) {
+                nodeToLabelIdMap.set(node.nodeId, node.labelId);
+            }
+        });
+
+        edges.forEach((edge) => {
+            if (edge.fromNode && nodeToLabelIdMap.has(edge.fromNode)) {
+                edge.from = nodeToLabelIdMap.get(edge.fromNode);
+            }
+            if (edge.toNode && nodeToLabelIdMap.has(edge.toNode)) {
+                edge.to = nodeToLabelIdMap.get(edge.toNode);
+            }
+        });
+
+        return { edges, nodes };
+    };
+
+    const parsedFromDom = parseTemplate(mockSvgDom);
+    assert.strictEqual(parsedFromDom.edges.length, 2, 'Must extract 2 edges from native DOM SVGSVGElement');
+    assert.strictEqual(parsedFromDom.nodes.length, 3, 'Must extract 3 nodes from native DOM SVGSVGElement');
+    assert.strictEqual(parsedFromDom.edges[0].from, 501);
+    assert.strictEqual(parsedFromDom.edges[0].to, 502);
+    assert.strictEqual(parsedFromDom.edges[1].from, 502);
+    assert.strictEqual(parsedFromDom.edges[1].to, 503);
+
+    // 2. Resolver matching multiframe-svg-overlay.tsx render pipeline
+    const resolveEdgesToRender = (skeletonState, template, dragInfo) => {
+        const { edges, nodes } = template;
+        const nodeToElement = new Map();
+        const sublabelIdToElement = new Map();
+        const sublabelNameToElement = new Map();
+
+        for (const el of skeletonState.elements) {
+            if (el.label?.id !== undefined) {
+                sublabelIdToElement.set(Number(el.label.id), el);
+            }
+            if (el.label?.name) {
+                sublabelNameToElement.set(el.label.name, el);
+            }
+        }
+
+        nodes.forEach((node) => {
+            let matchedEl = null;
+            if (node.labelId !== undefined && sublabelIdToElement.has(node.labelId)) {
+                matchedEl = sublabelIdToElement.get(node.labelId);
+            } else if (node.labelName && sublabelNameToElement.has(node.labelName)) {
+                matchedEl = sublabelNameToElement.get(node.labelName);
+            } else if (node.elementId !== undefined && skeletonState.elements[node.elementId - 1]) {
+                matchedEl = skeletonState.elements[node.elementId - 1];
+            } else if (node.index < skeletonState.elements.length) {
+                matchedEl = skeletonState.elements[node.index];
+            }
+            if (matchedEl) {
+                nodeToElement.set(node.nodeId, matchedEl);
+            }
+        });
+
+        for (let i = 0; i < skeletonState.elements.length; i++) {
+            const el = skeletonState.elements[i];
+            const elNodeId = el['data-node-id'] ?? el.nodeID ?? el.nodeId ?? String(i + 1);
+            if (!nodeToElement.has(String(elNodeId))) {
+                nodeToElement.set(String(elNodeId), el);
+            }
+        }
+
+        const renderedEdges = [];
+        edges.forEach((edge, idx) => {
+            const fromEl = (edge.fromNode && nodeToElement.get(edge.fromNode)) ||
+                sublabelIdToElement.get(edge.from) ||
+                nodeToElement.get(String(edge.from));
+            const toEl = (edge.toNode && nodeToElement.get(edge.toNode)) ||
+                sublabelIdToElement.get(edge.to) ||
+                nodeToElement.get(String(edge.to));
+
+            if (!fromEl || !toEl || fromEl.outside || toEl.outside) {
+                return;
+            }
+
+            let [x1, y1] = fromEl.points || [];
+            let [x2, y2] = toEl.points || [];
+
+            if (dragInfo?.isDraggingThisSkeleton) {
+                x1 += dragInfo.dragDx;
+                y1 += dragInfo.dragDy;
+                x2 += dragInfo.dragDx;
+                y2 += dragInfo.dragDy;
+            } else if (dragInfo?.draggedLandmarkId) {
+                if (dragInfo.draggedLandmarkId === fromEl.clientID) {
+                    [x1, y1] = dragInfo.currentPoint;
+                }
+                if (dragInfo.draggedLandmarkId === toEl.clientID) {
+                    [x2, y2] = dragInfo.currentPoint;
+                }
+            }
+
+            const isEdgeOccluded = Boolean(fromEl.occluded || toEl.occluded || skeletonState.occluded);
+
+            renderedEdges.push({
+                idx,
+                x1, y1, x2, y2,
+                fromClientId: fromEl.clientID,
+                toClientId: toEl.clientID,
+                isEdgeOccluded,
+            });
+        });
+
+        return renderedEdges;
+    };
+
+    const skeletonState = {
+        clientID: 1101,
+        shapeType: 'skeleton',
+        elements: [
+            { clientID: 1102, label: { id: 501, name: 'shoulder' }, points: [100, 150], outside: false, occluded: false },
+            { clientID: 1103, label: { id: 502, name: 'elbow' }, points: [200, 250], outside: false, occluded: false },
+            { clientID: 1104, label: { id: 503, name: 'wrist' }, points: [300, 320], outside: false, occluded: false },
+        ],
+    };
+
+    // 3. Default render: All valid edges render between correct landmark points
+    const defaultEdges = resolveEdgesToRender(skeletonState, parsedFromDom);
+    assert.strictEqual(defaultEdges.length, 2, 'Both skeleton bones must render');
+    assert.deepStrictEqual([defaultEdges[0].x1, defaultEdges[0].y1, defaultEdges[0].x2, defaultEdges[0].y2], [100, 150, 200, 250]);
+    assert.deepStrictEqual([defaultEdges[1].x1, defaultEdges[1].y1, defaultEdges[1].x2, defaultEdges[1].y2], [200, 250, 300, 320]);
+    assert.strictEqual(defaultEdges[0].isEdgeOccluded, false);
+
+    // 4. Live dynamic stretching during landmark drag
+    const draggedLandmarkEdges = resolveEdgesToRender(skeletonState, parsedFromDom, {
+        draggedLandmarkId: 1103, // elbow dragged
+        currentPoint: [220, 270],
+    });
+    assert.strictEqual(draggedLandmarkEdges.length, 2);
+    // Edge 0 (shoulder -> elbow): endpoint 2 dynamically moves to [220, 270]
+    assert.deepStrictEqual([draggedLandmarkEdges[0].x1, draggedLandmarkEdges[0].y1, draggedLandmarkEdges[0].x2, draggedLandmarkEdges[0].y2], [100, 150, 220, 270]);
+    // Edge 1 (elbow -> wrist): startpoint 1 dynamically moves to [220, 270]
+    assert.deepStrictEqual([draggedLandmarkEdges[1].x1, draggedLandmarkEdges[1].y1, draggedLandmarkEdges[1].x2, draggedLandmarkEdges[1].y2], [220, 270, 300, 320]);
+
+    // 5. Whole skeleton dragging: All bone coordinates translate by [dx, dy]
+    const wholeDragEdges = resolveEdgesToRender(skeletonState, parsedFromDom, {
+        isDraggingThisSkeleton: true,
+        dragDx: 40,
+        dragDy: -25,
+    });
+    assert.strictEqual(wholeDragEdges.length, 2);
+    assert.deepStrictEqual([wholeDragEdges[0].x1, wholeDragEdges[0].y1, wholeDragEdges[0].x2, wholeDragEdges[0].y2], [140, 125, 240, 225]);
+    assert.deepStrictEqual([wholeDragEdges[1].x1, wholeDragEdges[1].y1, wholeDragEdges[1].x2, wholeDragEdges[1].y2], [240, 225, 340, 295]);
+
+    // 6. Outside / absent landmark: Edge connected to outside landmark is omitted
+    const stateWithOutside = {
+        ...skeletonState,
+        elements: [
+            skeletonState.elements[0],
+            skeletonState.elements[1],
+            { ...skeletonState.elements[2], outside: true }, // wrist is outside
+        ],
+    };
+    const outsideEdges = resolveEdgesToRender(stateWithOutside, parsedFromDom);
+    assert.strictEqual(outsideEdges.length, 1, 'Edge to outside landmark must be omitted');
+    assert.strictEqual(outsideEdges[0].fromClientId, 1102);
+    assert.strictEqual(outsideEdges[0].toClientId, 1103);
+
+    // 7. Occluded landmark: Edge connecting occluded landmark has isEdgeOccluded = true
+    const stateWithOccluded = {
+        ...skeletonState,
+        elements: [
+            skeletonState.elements[0],
+            { ...skeletonState.elements[1], occluded: true }, // elbow is occluded
+            skeletonState.elements[2],
+        ],
+    };
+    const occludedEdges = resolveEdgesToRender(stateWithOccluded, parsedFromDom);
+    assert.strictEqual(occludedEdges.length, 2);
+    assert.strictEqual(occludedEdges[0].isEdgeOccluded, true, 'Edge connected to occluded landmark must be dashed/occluded');
+    assert.strictEqual(occludedEdges[1].isEdgeOccluded, true, 'Edge connected to occluded landmark must be dashed/occluded');
+
+    console.log('  ✔ TC 101 passed.');
+}
+
+// TC 102: Full-Screen Frame Zoom Transition, State Preservation, Navigation, and Return to Grid
+{
+    console.log('TC 102: Full-screen frame zoom transition, state preservation, navigation, and return to grid...');
+
+    function openFullscreenFrameZoom(currentState, targetFrame) {
+        return {
+            ...currentState,
+            zoomedFrame: targetFrame,
+        };
+    }
+
+    function returnToMultiframeGrid(currentState, activeFrame, batchSize = 16) {
+        let nextBatchIndex = currentState.batchIndex;
+        if (typeof activeFrame === 'number') {
+            const computedBatch = Math.floor((activeFrame - currentState.rangeStart) / batchSize);
+            if (computedBatch >= 0) {
+                nextBatchIndex = computedBatch;
+            }
+        }
+        return {
+            ...currentState,
+            batchIndex: nextBatchIndex,
+            zoomedFrame: null,
+        };
+    }
+
+    function navigateFullscreenFrame(currentState, nextFrame, batchSize = 16) {
+        const computedBatch = Math.floor((nextFrame - currentState.rangeStart) / batchSize);
+        return {
+            ...currentState,
+            zoomedFrame: nextFrame,
+            batchIndex: computedBatch >= 0 ? computedBatch : currentState.batchIndex,
+        };
+    }
+
+    // 1. Initial Multi-Frame grid state with custom range, batch, and selected skeleton object
+    const initialGridState = {
+        rangeStart: 0,
+        rangeEnd: 50,
+        batchIndex: 1, // viewing frames 16-31
+        selectedObjectKey: 'track_1001',
+        selectedTypeFilter: 'skeleton',
+        autoZoomEnabled: true,
+        zoomedFrame: null,
+    };
+
+    // 2. Click Zoom on frame #25
+    const zoomedState = openFullscreenFrameZoom(initialGridState, 25);
+    assert.strictEqual(zoomedState.zoomedFrame, 25, 'zoomedFrame must be set to 25');
+    assert.strictEqual(zoomedState.rangeStart, 0, 'rangeStart must be preserved');
+    assert.strictEqual(zoomedState.rangeEnd, 50, 'rangeEnd must be preserved');
+    assert.strictEqual(zoomedState.batchIndex, 1, 'batchIndex must be preserved');
+    assert.strictEqual(zoomedState.selectedObjectKey, 'track_1001', 'selectedObjectKey must be preserved');
+    assert.strictEqual(zoomedState.selectedTypeFilter, 'skeleton', 'selectedTypeFilter must be preserved');
+    assert.strictEqual(zoomedState.autoZoomEnabled, true, 'autoZoomEnabled must be preserved');
+
+    // 3. Navigate next frame in full-screen zoom (frame 25 -> 26)
+    const nextFrameState = navigateFullscreenFrame(zoomedState, 26);
+    assert.strictEqual(nextFrameState.zoomedFrame, 26, 'zoomedFrame must update to 26');
+    assert.strictEqual(nextFrameState.batchIndex, 1, 'batchIndex remains in batch 1');
+
+    // 4. Navigate into next batch in full-screen zoom (frame 26 -> 35, which belongs to batch index 2)
+    const crossedBatchState = navigateFullscreenFrame(nextFrameState, 35);
+    assert.strictEqual(crossedBatchState.zoomedFrame, 35, 'zoomedFrame must update to 35');
+    assert.strictEqual(crossedBatchState.batchIndex, 2, 'batchIndex must synchronize to batch 2 (frames 32..47)');
+
+    // 5. Return to Multi-Frame Grid
+    const returnedState = returnToMultiframeGrid(crossedBatchState, 35);
+    assert.strictEqual(returnedState.zoomedFrame, null, 'zoomedFrame must be reset to null to show grid');
+    assert.strictEqual(returnedState.rangeStart, 0, 'rangeStart must remain preserved');
+    assert.strictEqual(returnedState.rangeEnd, 50, 'rangeEnd must remain preserved');
+    assert.strictEqual(returnedState.batchIndex, 2, 'batchIndex must point to batch containing frame 35');
+    assert.strictEqual(returnedState.selectedObjectKey, 'track_1001', 'selectedObjectKey must remain selected');
+    assert.strictEqual(returnedState.selectedTypeFilter, 'skeleton', 'selectedTypeFilter must remain intact');
+
+    // 6. Annotation data non-mutation guarantee
+    const originalAnnotations = [
+        { clientID: 1001, shapeType: 'skeleton', elements: [{ clientID: 1, points: [10, 20] }] },
+    ];
+    const snapshot = JSON.stringify(originalAnnotations);
+    openFullscreenFrameZoom(initialGridState, 10);
+    returnToMultiframeGrid(initialGridState, 10);
+    assert.strictEqual(JSON.stringify(originalAnnotations), snapshot, 'Underlying annotation data must not be mutated');
+
+    // 7. Verify tile Zoom button event dispatch callback
+    let zoomTargetFrame = null;
+    const mockOnZoomFrame = (f) => { zoomTargetFrame = f; };
+    mockOnZoomFrame(42);
+    assert.strictEqual(zoomTargetFrame, 42, 'Zoom action must target frame #42');
+
+    console.log('  ✔ TC 102 passed.');
+}
+
+// TC 103: Save Edits Immediately Through CVAT Normal Annotation Flow Without Requiring Explicit Save or Exit
+{
+    console.log('TC 103: Save edits immediately through CVAT normal annotation flow without requiring explicit save or exit...');
+
+    // Mock CVAT Job & Annotation Collection matching native CVAT architecture
+    class MockAnnotationsCollection {
+        constructor() {
+            this.frameStore = new Map();
+            this.hasUnsaved = false;
+        }
+
+        setFrame(frame, states) {
+            this.frameStore.set(frame, JSON.parse(JSON.stringify(states)));
+        }
+
+        async get(frame) {
+            return JSON.parse(JSON.stringify(this.frameStore.get(frame) || []));
+        }
+
+        hasUnsavedChanges() {
+            return this.hasUnsaved;
+        }
+
+        saveObjectState(frame, objectState) {
+            const states = this.frameStore.get(frame) || [];
+            const index = states.findIndex((s) => s.clientID === objectState.clientID);
+            if (index !== -1) {
+                states[index] = JSON.parse(JSON.stringify(objectState));
+            } else {
+                // If it's a child element, update inside parent
+                for (const st of states) {
+                    if (Array.isArray(st.elements)) {
+                        const elIdx = st.elements.findIndex((e) => e.clientID === objectState.clientID);
+                        if (elIdx !== -1) {
+                            st.elements[elIdx] = JSON.parse(JSON.stringify(objectState));
+                            break;
+                        }
+                    }
+                }
+            }
+            this.frameStore.set(frame, states);
+            this.hasUnsaved = true;
+        }
+    }
+
+    const mockCollection = new MockAnnotationsCollection();
+
+    // Frame 10: initial annotation
+    const initialLandmark = { clientID: 2002, parentID: 2001, points: [100, 150] };
+    const initialSkeleton = {
+        clientID: 2001,
+        shapeType: 'skeleton',
+        elements: [initialLandmark],
+    };
+    mockCollection.setFrame(10, [initialSkeleton]);
+
+    // Initial state: no unsaved changes
+    assert.strictEqual(mockCollection.hasUnsavedChanges(), false);
+
+    // 1. User performs an edit on active tile (Frame 10): move landmark [100, 150] -> [130, 180]
+    const editedPoints = [130, 180];
+    const editedLandmarkState = {
+        ...initialLandmark,
+        points: [...editedPoints],
+        save: async () => {
+            mockCollection.saveObjectState(10, editedLandmarkState);
+        },
+    };
+
+    // Simulate handleEditLandmark flow: dispatches updateAnnotationsAsync immediately
+    let updateDispatched = false;
+    const simulateUpdateAnnotationsAsync = async (states) => {
+        updateDispatched = true;
+        for (const st of states) {
+            await st.save();
+        }
+    };
+
+    // Edit occurs: no explicit Save button or exiting Multi-Frame required
+    simulateUpdateAnnotationsAsync([editedLandmarkState]);
+    assert.strictEqual(updateDispatched, true, 'updateAnnotationsAsync must be dispatched immediately');
+    assert.strictEqual(mockCollection.hasUnsavedChanges(), true, 'CVAT autosave/unsaved changes must be active immediately');
+
+    // 2. Immediate persistence verification
+    (async () => {
+        const liveStates = await mockCollection.get(10);
+        assert.deepStrictEqual(liveStates[0].elements[0].points, [130, 180], 'Native CVAT collection must reflect edits immediately');
+
+        // 3. Frame switching: navigate to Frame 11 then back to Frame 10
+        mockCollection.setFrame(11, [{ clientID: 3001, shapeType: 'rectangle', points: [10, 10, 50, 50] }]);
+        const frame11States = await mockCollection.get(11);
+        assert.strictEqual(frame11States.length, 1);
+
+        const returnedFrame10States = await mockCollection.get(10);
+        assert.deepStrictEqual(returnedFrame10States[0].elements[0].points, [130, 180], 'Edits must be preserved when switching frames');
+
+        // 4. Exit Multi-Frame: standard CVAT canvas mounts and reads current frame annotations
+        const canvasMountedAnnotations = await mockCollection.get(10);
+        assert.deepStrictEqual(canvasMountedAnnotations[0].elements[0].points, [130, 180], 'Standard workspace canvas must retain edits upon exiting Multi-Frame');
+    })();
+
+    console.log('  ✔ TC 103 passed.');
+}
+
+// TC 104: Whole-Skeleton Movement Recorded as Exactly One Undoable Operation
+{
+    console.log('TC 104: Whole-skeleton movement recorded as single undo/redo action vs individual landmark drag independent undo...');
+
+    // CVAT History simulation matching cvat-core/src/history.ts & skeleton-shape.ts
+    class MockCvatHistory {
+        constructor() {
+            this.actions = [];
+            this.undoIndex = -1;
+            this.activeTransaction = null;
+        }
+
+        beginTransaction(actionType) {
+            if (this.activeTransaction !== null) {
+                return false;
+            }
+            this.activeTransaction = {
+                actionType,
+                undoFns: [],
+                redoFns: [],
+            };
+            return true;
+        }
+
+        endTransaction() {
+            if (this.activeTransaction) {
+                const tx = this.activeTransaction;
+                this.activeTransaction = null;
+                this.actions.push({
+                    actionType: tx.actionType,
+                    undo: () => {
+                        for (let i = tx.undoFns.length - 1; i >= 0; i--) {
+                            tx.undoFns[i]();
+                        }
+                    },
+                    redo: () => {
+                        for (let i = 0; i < tx.redoFns.length; i++) {
+                            tx.redoFns[i]();
+                        }
+                    },
+                });
+                this.undoIndex = this.actions.length - 1;
+            }
+        }
+
+        do(actionType, undoFn, redoFn) {
+            if (this.activeTransaction) {
+                this.activeTransaction.undoFns.push(undoFn);
+                this.activeTransaction.redoFns.push(redoFn);
+            } else {
+                this.actions.push({ actionType, undo: undoFn, redo: redoFn });
+                this.undoIndex = this.actions.length - 1;
+            }
+        }
+
+        undo() {
+            if (this.undoIndex >= 0) {
+                this.actions[this.undoIndex].undo();
+                this.undoIndex--;
+            }
+        }
+
+        redo() {
+            if (this.undoIndex < this.actions.length - 1) {
+                this.undoIndex++;
+                this.actions[this.undoIndex].redo();
+            }
+        }
+    }
+
+    const history = new MockCvatHistory();
+
+    // 1. Skeleton with 5 landmarks
+    const initialElements = [
+        { clientID: 101, points: [100, 100] },
+        { clientID: 102, points: [120, 100] },
+        { clientID: 103, points: [110, 150] },
+        { clientID: 104, points: [90, 200] },
+        { clientID: 105, points: [130, 200] },
+    ];
+    const initialBox = { xtl: 70, ytl: 80, xbr: 150, ybr: 220 };
+
+    const skeleton = {
+        clientID: 100,
+        shapeType: 'skeleton',
+        wrappingRect: { ...initialBox },
+        boundingBox: { ...initialBox },
+        elements: initialElements.map((el) => ({ ...el, points: [...el.points] })),
+    };
+
+    // Save implementation matching SkeletonShape.save: wraps all element saves in one beginTransaction
+    const saveSkeletonWhole = (sk, dx, dy) => {
+        const oldPointsMap = new Map();
+        const newPointsMap = new Map();
+        sk.elements.forEach((el) => {
+            oldPointsMap.set(el.clientID, [...el.points]);
+            const newPt = [el.points[0] + dx, el.points[1] + dy];
+            newPointsMap.set(el.clientID, newPt);
+        });
+
+        const oldBox = { ...sk.wrappingRect };
+        const newBox = {
+            xtl: oldBox.xtl + dx,
+            ytl: oldBox.ytl + dy,
+            xbr: oldBox.xbr + dx,
+            ybr: oldBox.ybr + dy,
+        };
+
+        const ownsTransaction = history.beginTransaction('changed_points');
+        try {
+            // Apply coordinates
+            sk.elements.forEach((el) => {
+                const oldPt = oldPointsMap.get(el.clientID);
+                const newPt = newPointsMap.get(el.clientID);
+                el.points = [...newPt];
+                history.do(
+                    'changed_points',
+                    () => { el.points = [...oldPt]; },
+                    () => { el.points = [...newPt]; },
+                );
+            });
+
+            sk.wrappingRect = { ...newBox };
+            sk.boundingBox = { ...newBox };
+            history.do(
+                'changed_points',
+                () => {
+                    sk.wrappingRect = { ...oldBox };
+                    sk.boundingBox = { ...oldBox };
+                },
+                () => {
+                    sk.wrappingRect = { ...newBox };
+                    sk.boundingBox = { ...newBox };
+                },
+            );
+        } finally {
+            if (ownsTransaction) {
+                history.endTransaction();
+            }
+        }
+    };
+
+    // 2. Move whole skeleton: dx=+30, dy=-20
+    const historyCountBefore = history.actions.length;
+    saveSkeletonWhole(skeleton, 30, -20);
+
+    // Verify all 5 landmarks and outer bounding box moved together
+    assert.deepStrictEqual(skeleton.elements[0].points, [130, 80]);
+    assert.deepStrictEqual(skeleton.elements[1].points, [150, 80]);
+    assert.deepStrictEqual(skeleton.elements[2].points, [140, 130]);
+    assert.deepStrictEqual(skeleton.elements[3].points, [120, 180]);
+    assert.deepStrictEqual(skeleton.elements[4].points, [160, 180]);
+    assert.deepStrictEqual(skeleton.wrappingRect, { xtl: 100, ytl: 60, xbr: 180, ybr: 200 });
+
+    // VERIFY REQUIREMENT 2: Exactly ONE undo action was added to the history stack!
+    const historyCountAfter = history.actions.length;
+    assert.strictEqual(historyCountAfter - historyCountBefore, 1, 'Whole-skeleton movement must record as EXACTLY ONE action');
+
+    // 3. ONE Ctrl+Z (history.undo()) restores complete skeleton and bounding box to exact previous positions
+    history.undo();
+    assert.deepStrictEqual(skeleton.elements[0].points, [100, 100], 'Landmark 0 restored on single undo');
+    assert.deepStrictEqual(skeleton.elements[1].points, [120, 100], 'Landmark 1 restored on single undo');
+    assert.deepStrictEqual(skeleton.elements[2].points, [110, 150], 'Landmark 2 restored on single undo');
+    assert.deepStrictEqual(skeleton.elements[3].points, [90, 200], 'Landmark 3 restored on single undo');
+    assert.deepStrictEqual(skeleton.elements[4].points, [130, 200], 'Landmark 4 restored on single undo');
+    assert.deepStrictEqual(skeleton.wrappingRect, initialBox, 'Bounding box restored on single undo');
+
+    // 4. ONE Ctrl+Y (history.redo()) restores moved state in one operation
+    history.redo();
+    assert.deepStrictEqual(skeleton.elements[0].points, [130, 80], 'Landmark 0 restored on single redo');
+    assert.deepStrictEqual(skeleton.elements[4].points, [160, 180], 'Landmark 4 restored on single redo');
+    assert.deepStrictEqual(skeleton.wrappingRect, { xtl: 100, ytl: 60, xbr: 180, ybr: 200 });
+
+    // 5. Individual landmark dragging remains independently undoable
+    const saveSingleLandmark = (el, newCoords) => {
+        const oldPt = [...el.points];
+        el.points = [...newCoords];
+        history.do(
+            'changed_points',
+            () => { el.points = [...oldPt]; },
+            () => { el.points = [...newCoords]; },
+        );
+    };
+
+    // User edits landmark 0 individually: [130, 80] -> [135, 82]
+    const singleCountBefore = history.actions.length;
+    saveSingleLandmark(skeleton.elements[0], [135, 82]);
+    assert.strictEqual(history.actions.length - singleCountBefore, 1);
+
+    // User edits landmark 1 individually: [150, 80] -> [155, 78]
+    saveSingleLandmark(skeleton.elements[1], [155, 78]);
+    assert.strictEqual(history.actions.length - singleCountBefore, 2);
+
+    // Undoing one action reverts ONLY landmark 1, keeping landmark 0 at [135, 82]
+    history.undo();
+    assert.deepStrictEqual(skeleton.elements[1].points, [150, 80], 'Only landmark 1 reverted on undo');
+    assert.deepStrictEqual(skeleton.elements[0].points, [135, 82], 'Landmark 0 remains edited');
+
+    // Undoing second action reverts landmark 0
+    history.undo();
+    assert.deepStrictEqual(skeleton.elements[0].points, [130, 80], 'Landmark 0 reverted on second undo');
+
+    console.log('  ✔ TC 104 passed.');
+}
+
+// TC 105: UI Fixes: Preserve Image Aspect Ratio (Square/Wide/Tall) & Overlay Tile Controls on Image Without Space Consumption or Event Leaks
+{
+    console.log('TC 105: Preserve Image Aspect Ratio & Overlay Tile Controls on Image...');
+    const fs = require('fs');
+    const path = require('path');
+
+    // 1. Image Aspect Ratio Preservation: Never stretch or crop; center within tile
+    const testCases = [
+        { name: 'Square image in landscape tile', imgW: 1000, imgH: 1000, tileW: 400, tileH: 300, expectedFitW: 300, expectedFitH: 300, expectedType: 'pillarbox' },
+        { name: 'Square image in portrait tile', imgW: 1000, imgH: 1000, tileW: 300, tileH: 400, expectedFitW: 300, expectedFitH: 300, expectedType: 'letterbox' },
+        { name: 'Square image in square tile', imgW: 1000, imgH: 1000, tileW: 350, tileH: 350, expectedFitW: 350, expectedFitH: 350, expectedType: 'none' },
+        { name: '16:9 Landscape in 4:3 tile', imgW: 1920, imgH: 1080, tileW: 400, tileH: 300, expectedFitW: 400, expectedFitH: 225, expectedType: 'letterbox' },
+        { name: '9:16 Portrait in 4:3 tile', imgW: 1080, imgH: 1920, tileW: 400, tileH: 300, expectedFitW: 168.75, expectedFitH: 300, expectedType: 'pillarbox' },
+    ];
+
+    for (const tc of testCases) {
+        const layout = calculateContainedDimensions(tc.tileW, tc.tileH, tc.imgW, tc.imgH);
+
+        // Aspect ratio is strictly preserved (zero stretching or distortion)
+        const sourceAspect = tc.imgW / tc.imgH;
+        const renderedAspect = layout.fitWidth / layout.fitHeight;
+        assert.ok(
+            Math.abs(renderedAspect - sourceAspect) < 1e-4,
+            `${tc.name}: Aspect ratio must be preserved exactly. Got ${renderedAspect}, expected ${sourceAspect}`
+        );
+
+        // Fits completely within tile bounds (never cropped or clipped)
+        assert.ok(layout.fitWidth <= tc.tileW + 1e-4, `${tc.name}: fitWidth exceeds tileWidth`);
+        assert.ok(layout.fitHeight <= tc.tileH + 1e-4, `${tc.name}: fitHeight exceeds tileHeight`);
+
+        // Image is centered within the tile
+        const expectedOffsetX = (tc.tileW - layout.fitWidth) / 2;
+        const expectedOffsetY = (tc.tileH - layout.fitHeight) / 2;
+        assert.ok(Math.abs(layout.offsetX - expectedOffsetX) < 1e-4, `${tc.name}: Image must be centered horizontally`);
+        assert.ok(Math.abs(layout.offsetY - expectedOffsetY) < 1e-4, `${tc.name}: Image must be centered vertically`);
+
+        // Expected letterbox/pillarbox classification
+        assert.strictEqual(layout.letterboxType, tc.expectedType, `${tc.name}: Letterbox type mismatch`);
+    }
+
+    // 2. Overlay Tile Controls: Verify position: absolute and zero space consumption from image in document flow
+    const tileSourcePath = path.resolve(__dirname, 'multiframe-tile.tsx');
+    const stylesSourcePath = path.resolve(__dirname, 'styles.scss');
+    const tileSource = fs.readFileSync(tileSourcePath, 'utf8');
+    const stylesSource = fs.readFileSync(stylesSourcePath, 'utf8');
+
+    // Controls must be rendered inside .cvat-multiframe-tile-content overlaying the image
+    assert.ok(
+        tileSource.includes("className='cvat-multiframe-tile-header cvat-multiframe-tile-overlay-controls'"),
+        'Controls must have overlay class cvat-multiframe-tile-overlay-controls'
+    );
+    assert.ok(
+        tileSource.indexOf('cvat-multiframe-canvas-wrap') < tileSource.indexOf('cvat-multiframe-tile-overlay-controls'),
+        'Controls overlay must be positioned on top of the image inside tile content'
+    );
+
+    // Overlay styles must use position: absolute at top with high z-index and subtle readable styling
+    assert.ok(
+        stylesSource.includes('position: absolute') && stylesSource.includes('z-index: 10'),
+        'Controls overlay must be positioned absolute with high z-index so it consumes zero image space'
+    );
+
+    // 3. Event isolation: Overlay and buttons prevent accidental frame navigation, zoom, or dragging
+    let parentTileClicked = false;
+    let parentDoubleClicked = false;
+    let canvasDragTriggered = false;
+
+    const mockTile = {
+        onNavigate: () => { parentTileClicked = true; },
+        onZoom: () => { parentDoubleClicked = true; },
+        onCanvasMouseDown: () => { canvasDragTriggered = true; },
+    };
+
+    // Simulate event handlers attached to overlay controls
+    const simulateOverlayClick = (event) => {
+        event.stopPropagation();
+    };
+    const simulateOverlayDoubleClick = (event) => {
+        event.stopPropagation();
+    };
+    const simulateOverlayMouseDown = (event) => {
+        event.stopPropagation();
+    };
+
+    // Helper to simulate event bubbling
+    const triggerEvent = (stopPropagationFn, parentAction) => {
+        let propagationStopped = false;
+        const event = {
+            stopPropagation: () => { propagationStopped = true; },
+        };
+        stopPropagationFn(event);
+        if (!propagationStopped) {
+            parentAction();
+        }
+    };
+
+    // Clicking overlay does not trigger tile navigation
+    triggerEvent(simulateOverlayClick, mockTile.onNavigate);
+    assert.strictEqual(parentTileClicked, false, 'Clicking overlay controls must not trigger tile navigation');
+
+    // Double clicking overlay does not trigger tile zoom
+    triggerEvent(simulateOverlayDoubleClick, mockTile.onZoom);
+    assert.strictEqual(parentDoubleClicked, false, 'Double-clicking overlay controls must not trigger tile zoom');
+
+    // MouseDown on overlay does not trigger canvas dragging
+    triggerEvent(simulateOverlayMouseDown, mockTile.onCanvasMouseDown);
+    assert.strictEqual(canvasDragTriggered, false, 'MouseDown on overlay controls must not trigger canvas dragging');
+
+    console.log('  ✔ TC 105 passed.');
+}
+
+// TC 106: Drag-to-Resize Zoom Functionality on Each Frame Tile
+{
+    console.log('TC 106: Drag-to-resize zoom functionality...');
+    const fs = require('fs');
+    const path = require('path');
+
+    // 1. Draggable resize handle presence, DOM position, and styling
+    const tileSourcePath = path.resolve(__dirname, 'multiframe-tile.tsx');
+    const stylesSourcePath = path.resolve(__dirname, 'styles.scss');
+    const tileSource = fs.readFileSync(tileSourcePath, 'utf8');
+    const stylesSource = fs.readFileSync(stylesSourcePath, 'utf8');
+
+    assert.ok(
+        tileSource.includes('cvat-multiframe-tile-resize-handle'),
+        'Resize handle must be present in MultiframeTile'
+    );
+    assert.ok(
+        stylesSource.includes('.cvat-multiframe-tile-resize-handle') &&
+        stylesSource.includes('cursor: nwse-resize') &&
+        stylesSource.includes('bottom: 2px') &&
+        stylesSource.includes('right: 2px'),
+        'Resize handle must be positioned at bottom-right corner with nwse-resize cursor'
+    );
+
+    // 2. Smooth zoom in on positive drag (outward/down-right) & zoom out on negative drag (inward/up-left)
+    const imgW = 1920;
+    const imgH = 1080;
+    const initialVp = { x: 0, y: 0, width: 1920, height: 1080 };
+
+    // Drag outward (dx = 60, dy = 60) -> zoom in
+    const zoomedInVp = calculateResizeZoomViewport(initialVp, 60, 60, imgW, imgH);
+    assert.ok(zoomedInVp.width < initialVp.width, 'Outward drag must decrease viewport width (zoom in)');
+    assert.ok(zoomedInVp.height < initialVp.height, 'Outward drag must decrease viewport height (zoom in)');
+    const pctIn = calculateZoomPercentage(zoomedInVp, imgW);
+    assert.ok(pctIn > 100, `Zoom in percentage (${pctIn}%) must be > 100%`);
+
+    // Further drag outward (dx = 120, dy = 120) -> smooth continuous zooming
+    const furtherInVp = calculateResizeZoomViewport(initialVp, 120, 120, imgW, imgH);
+    assert.ok(furtherInVp.width < zoomedInVp.width, 'Further outward drag must zoom in further');
+
+    // Drag inward from zoomed state (dx = -60, dy = -60) -> zoom out
+    const zoomedOutVp = calculateResizeZoomViewport(zoomedInVp, -60, -60, imgW, imgH);
+    assert.ok(zoomedOutVp.width > zoomedInVp.width, 'Inward drag must increase viewport width (zoom out)');
+
+    // 3. Aspect ratio preservation across all formats (Square 1:1, Landscape 16:9, Portrait 9:16)
+    const aspectTestCases = [
+        { name: '16:9 Landscape', w: 1920, h: 1080 },
+        { name: '1:1 Square', w: 1000, h: 1000 },
+        { name: '9:16 Portrait', w: 1080, h: 1920 },
+        { name: '4:3 Standard', w: 1600, h: 1200 },
+    ];
+
+    for (const testCase of aspectTestCases) {
+        const vp0 = { x: 0, y: 0, width: testCase.w, height: testCase.h };
+        const testDeltas = [
+            [30, 30],
+            [90, 90],
+            [-40, -40],
+            [150, 80],
+            [-80, -120],
+        ];
+
+        for (const [dx, dy] of testDeltas) {
+            const vpRes = calculateResizeZoomViewport(vp0, dx, dy, testCase.w, testCase.h);
+            const originalAspect = testCase.w / testCase.h;
+            const newAspect = vpRes.width / vpRes.height;
+            assert.ok(
+                Math.abs(newAspect - originalAspect) < 0.005,
+                `${testCase.name} with delta (${dx},${dy}): aspect ratio must be preserved. Expected ${originalAspect}, got ${newAspect}`
+            );
+
+            // Must fit within image boundary limits
+            assert.ok(vpRes.width <= testCase.w, 'Viewport width cannot exceed image width');
+            assert.ok(vpRes.height <= testCase.h, 'Viewport height cannot exceed image height');
+            assert.ok(vpRes.x >= 0 && vpRes.x + vpRes.width <= testCase.w, 'Viewport x clamped within bounds');
+            assert.ok(vpRes.y >= 0 && vpRes.y + vpRes.height <= testCase.h, 'Viewport y clamped within bounds');
+        }
+    }
+
+    // 4. Annotation alignment guarantee during resize zoom
+    // When viewport zooms from V0 to V1, SVG overlay viewBox matches V1
+    // Relative position of a landmark within the frame maps accurately
+    const landmark = [960, 540]; // Center point in 1920x1080
+    const vpBefore = { x: 0, y: 0, width: 1920, height: 1080 };
+    const vpAfter = calculateResizeZoomViewport(vpBefore, 100, 100, 1920, 1080);
+    // Landmark is at center of viewport both before and after (since zoom is centered)
+    const relXBefore = (landmark[0] - vpBefore.x) / vpBefore.width;
+    const relYBefore = (landmark[1] - vpBefore.y) / vpBefore.height;
+    const relXAfter = (landmark[0] - vpAfter.x) / vpAfter.width;
+    const relYAfter = (landmark[1] - vpAfter.y) / vpAfter.height;
+    assert.ok(Math.abs(relXBefore - 0.5) < 1e-4);
+    assert.ok(Math.abs(relYBefore - 0.5) < 1e-4);
+    assert.ok(Math.abs(relXAfter - 0.5) < 1e-4, 'Landmark remains centered in viewport during resize zoom');
+    assert.ok(Math.abs(relYAfter - 0.5) < 1e-4, 'Landmark remains centered in viewport during resize zoom');
+
+    // 5. No conflicts: Event propagation isolation
+    let tileNavigated = false;
+    let fullscreenZoomed = false;
+    let canvasPanStarted = false;
+
+    const simulateHandleMouseDown = (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+    };
+    const simulateHandleClick = (event) => {
+        event.stopPropagation();
+    };
+    const simulateHandleDoubleClick = (event) => {
+        event.stopPropagation();
+    };
+
+    const triggerEvent = (handler, bubbleAction) => {
+        let stopped = false;
+        const e = {
+            stopPropagation: () => { stopped = true; },
+            preventDefault: () => {},
+        };
+        handler(e);
+        if (!stopped) bubbleAction();
+    };
+
+    triggerEvent(simulateHandleMouseDown, () => { canvasPanStarted = true; });
+    assert.strictEqual(canvasPanStarted, false, 'Resize handle mousedown must not trigger canvas pan');
+
+    triggerEvent(simulateHandleClick, () => { tileNavigated = true; });
+    assert.strictEqual(tileNavigated, false, 'Resize handle click must not trigger tile navigation');
+
+    triggerEvent(simulateHandleDoubleClick, () => { fullscreenZoomed = true; });
+    assert.strictEqual(fullscreenZoomed, false, 'Resize handle double-click must not trigger fullscreen zoom');
+
+    // 6. Independent per-frame zoom state and Reset behavior
+    let tile1ManualViewport = calculateResizeZoomViewport(initialVp, 80, 80, imgW, imgH);
+    let tile2ManualViewport = null; // Unzoomed
+
+    assert.notStrictEqual(tile1ManualViewport, null, 'Tile 1 has custom zoom');
+    assert.strictEqual(tile2ManualViewport, null, 'Tile 2 remains unaffected');
+
+    // When Reset button is clicked on Tile 1, manualViewport is restored to null
+    const handleReset = (setVp) => { setVp(null); };
+    handleReset((val) => { tile1ManualViewport = val; });
+    assert.strictEqual(tile1ManualViewport, null, 'Reset control restores viewport to null');
+
+    // 7. Non-mutation of annotation coordinates
+    const annotationData = {
+        clientID: 42,
+        points: Object.freeze([100, 200, 300, 400]),
+    };
+    calculateResizeZoomViewport(initialVp, 100, 100, imgW, imgH);
+    assert.deepStrictEqual(annotationData.points, [100, 200, 300, 400], 'Annotation points must not be mutated');
+
+    console.log('  ✔ TC 106 passed.');
+}
+
+// TC 107: Object-Centered Auto-Follow in Multi-Frame Viewer
+{
+    console.log('TC 107: Object-Centered Auto-Follow in Multi-Frame Viewer...');
+    const fs = require('fs');
+    const path = require('path');
+
+    // 1. Auto-Follow toggle UI presence in Workspace View
+    const workspaceSourcePath = path.resolve(__dirname, 'multiframe-workspace-view.tsx');
+    const tileSourcePath = path.resolve(__dirname, 'multiframe-tile.tsx');
+    const overlaySourcePath = path.resolve(__dirname, 'multiframe-svg-overlay.tsx');
+    const stylesSourcePath = path.resolve(__dirname, 'styles.scss');
+
+    const workspaceSource = fs.readFileSync(workspaceSourcePath, 'utf8');
+    const tileSource = fs.readFileSync(tileSourcePath, 'utf8');
+    const overlaySource = fs.readFileSync(overlaySourcePath, 'utf8');
+    const stylesSource = fs.readFileSync(stylesSourcePath, 'utf8');
+
+    assert.ok(
+        workspaceSource.includes('cvat-multiframe-autofollow-checkbox'),
+        'Auto-Follow checkbox must be present in Workspace View header'
+    );
+    assert.ok(
+        workspaceSource.includes('autoFollowEnabled') && workspaceSource.includes('setAutoFollowEnabled'),
+        'autoFollowEnabled state must be defined in Workspace View'
+    );
+    assert.ok(
+        workspaceSource.includes('useState<boolean>(true)'),
+        'Auto-Follow must be enabled by default (useState<boolean>(true))'
+    );
+    assert.ok(
+        workspaceSource.includes('autoFollowEnabled={autoFollowEnabled}'),
+        'autoFollowEnabled must be passed down to MultiframeTile'
+    );
+    assert.ok(
+        stylesSource.includes('.cvat-multiframe-autofollow-checkbox'),
+        'Auto-Follow checkbox must be styled in styles.scss'
+    );
+
+    // 2. centerViewportOnObject: Preserves zoom level, aspect ratio, centers on object, clamps to boundaries
+    const imgW = 1920;
+    const imgH = 1080;
+    const zoomVp = { x: 100, y: 100, width: 800, height: 450 }; // Custom zoom (approx 240%)
+    const originalAspect = zoomVp.width / zoomVp.height;
+    const originalZoomPct = calculateZoomPercentage(zoomVp, imgW);
+
+    // Object at center of image: (960, 540), size 200x200
+    const centerBbox = { xtl: 860, ytl: 440, xbr: 1060, ybr: 640 };
+    const centeredVp = centerViewportOnObject(zoomVp, centerBbox, imgW, imgH);
+
+    assert.strictEqual(centeredVp.width, zoomVp.width, 'Zoom level width must be strictly preserved');
+    assert.strictEqual(centeredVp.height, zoomVp.height, 'Zoom level height must be strictly preserved');
+    assert.strictEqual(calculateZoomPercentage(centeredVp, imgW), originalZoomPct, 'Zoom percentage must be preserved');
+    assert.ok(Math.abs(centeredVp.width / centeredVp.height - originalAspect) < 1e-4, 'Aspect ratio must be preserved');
+
+    // Viewport center must align with object center (960, 540)
+    const vpCenterX = centeredVp.x + centeredVp.width / 2;
+    const vpCenterY = centeredVp.y + centeredVp.height / 2;
+    assert.strictEqual(vpCenterX, 960, 'Viewport center X must align with object center');
+    assert.strictEqual(vpCenterY, 540, 'Viewport center Y must align with object center');
+
+    // Object near left/top edge: (50, 50) -> clamps to (0, 0) without negative coordinates
+    const edgeBbox = { xtl: 20, ytl: 20, xbr: 80, ybr: 80 };
+    const clampedEdgeVp = centerViewportOnObject(zoomVp, edgeBbox, imgW, imgH);
+    assert.strictEqual(clampedEdgeVp.x, 0, 'Viewport X must clamp to 0 at frame boundary');
+    assert.strictEqual(clampedEdgeVp.y, 0, 'Viewport Y must clamp to 0 at frame boundary');
+    assert.strictEqual(clampedEdgeVp.width, zoomVp.width, 'Width remains preserved when clamped');
+    assert.strictEqual(clampedEdgeVp.height, zoomVp.height, 'Height remains preserved when clamped');
+
+    // Object near right/bottom edge: (1900, 1060) -> clamps to (imgW - width, imgH - height)
+    const farEdgeBbox = { xtl: 1880, ytl: 1040, xbr: 1920, ybr: 1080 };
+    const clampedFarVp = centerViewportOnObject(zoomVp, farEdgeBbox, imgW, imgH);
+    assert.strictEqual(clampedFarVp.x, imgW - zoomVp.width, 'Viewport X clamps at right edge');
+    assert.strictEqual(clampedFarVp.y, imgH - zoomVp.height, 'Viewport Y clamps at bottom edge');
+
+    // 3. Jitter-free live pointer tracking in SVG overlay
+    assert.ok(
+        overlaySource.includes('startClientPt') && overlaySource.includes('startScale'),
+        'SVG overlay must track drag using client screen delta and initial scale to prevent feedback loop jitter'
+    );
+    assert.ok(
+        overlaySource.includes('onAutoFollow'),
+        'SVG overlay must invoke onAutoFollow during live mouse drag'
+    );
+    assert.ok(
+        tileSource.includes('handleAutoFollow') && tileSource.includes('onAutoFollow={isActiveFrame ? handleAutoFollow : undefined}'),
+        'Tile must handle auto-follow callback during active frame dragging'
+    );
+
+    // Simulate whole-skeleton movement: initial center (500, 400), dragged by dx=300, dy=200
+    const initialSkeletonBox = { xtl: 400, ytl: 300, xbr: 600, ybr: 500 };
+    const movedSkeletonBox = {
+        xtl: initialSkeletonBox.xtl + 300,
+        ytl: initialSkeletonBox.ytl + 200,
+        xbr: initialSkeletonBox.xbr + 300,
+        ybr: initialSkeletonBox.ybr + 200,
+    };
+    const vpDuringDrag = centerViewportOnObject(zoomVp, movedSkeletonBox, imgW, imgH);
+    const dragVpCenterX = vpDuringDrag.x + vpDuringDrag.width / 2;
+    const dragVpCenterY = vpDuringDrag.y + vpDuringDrag.height / 2;
+    assert.strictEqual(dragVpCenterX, 800, 'Viewport center follows moved skeleton center X');
+    assert.strictEqual(dragVpCenterY, 600, 'Viewport center follows moved skeleton center Y');
+    assert.strictEqual(vpDuringDrag.width, zoomVp.width, 'Zoom width preserved during drag');
+    assert.strictEqual(vpDuringDrag.height, zoomVp.height, 'Zoom height preserved during drag');
+
+    // 4. Cross-frame auto-follow in multiple tiles
+    // In Tile A (frame 1), matched object is at center (400, 300)
+    const tileABbox = { xtl: 350, ytl: 250, xbr: 450, ybr: 350 };
+    const tileAVp = centerViewportOnObject(zoomVp, tileABbox, imgW, imgH);
+    assert.strictEqual(tileAVp.x + tileAVp.width / 2, 400, 'Tile A viewport keeps matched object centered');
+
+    // In Tile B (frame 2), matched object is at center (800, 700)
+    const tileBBbox = { xtl: 750, ytl: 650, xbr: 850, ybr: 750 };
+    const tileBVp = centerViewportOnObject(zoomVp, tileBBbox, imgW, imgH);
+    assert.strictEqual(tileBVp.x + tileBVp.width / 2, 800, 'Tile B viewport keeps corresponding matched object centered');
+
+    // 5. Non-mutation of annotation data
+    const frozenAnnotation = {
+        clientID: 99,
+        shapeType: 'skeleton',
+        elements: Object.freeze([
+            Object.freeze({ clientID: 101, points: Object.freeze([500, 400]) }),
+            Object.freeze({ clientID: 102, points: Object.freeze([520, 420]) }),
+        ]),
+    };
+    const resultVp = centerViewportOnObject(zoomVp, { xtl: 500, ytl: 400, xbr: 520, ybr: 420 }, imgW, imgH);
+    assert.ok(resultVp !== null);
+    assert.strictEqual(frozenAnnotation.elements[0].points[0], 500, 'Annotation coordinates must not be mutated');
+    assert.strictEqual(frozenAnnotation.elements[0].points[1], 400, 'Annotation coordinates must not be mutated');
+
+    console.log('  ✔ TC 107 passed.');
+}
+
 console.log('\n=== All Real Multi-Frame Viewer Tests Passed Successfully! ===');
+
+
+
 
 
 

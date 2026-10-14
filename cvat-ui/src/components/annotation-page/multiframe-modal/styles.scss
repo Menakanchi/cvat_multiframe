@@ -61,7 +61,8 @@
     align-items: center;
     gap: 8px;
 
-    .cvat-multiframe-autozoom-checkbox {
+    .cvat-multiframe-autozoom-checkbox,
+    .cvat-multiframe-autofollow-checkbox {
         color: #e0e0e0;
         margin-left: 4px;
     }
@@ -100,11 +101,12 @@
 }
 
 .cvat-multiframe-tile {
+    position: relative;
     display: flex;
     flex-direction: column;
     border: 1px solid #3a3a3a;
     border-radius: 4px;
-    background: #141414;
+    background: #000;
     overflow: hidden;
     cursor: pointer;
     transition: all 0.2s ease-in-out;
@@ -121,56 +123,74 @@
     box-shadow: 0 0 6px rgba(82, 196, 26, 0.45);
 
     .cvat-multiframe-tile-header {
-        background: #1b381b;
+        background: rgba(24, 48, 24, 0.82);
+        border-bottom-color: rgba(82, 196, 26, 0.4);
     }
 }
 
 .cvat-multiframe-tile-header {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 2px 6px;
-    background: #262626;
+    padding: 3px 6px;
+    background: rgba(18, 18, 18, 0.72);
+    backdrop-filter: blur(4px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     color: #fff;
     min-height: 24px;
     font-size: 11px;
+    pointer-events: auto;
+    transition: background 0.2s ease;
 
     .cvat-multiframe-tile-header-left,
     .cvat-multiframe-tile-header-center,
     .cvat-multiframe-tile-header-right {
         display: flex;
         align-items: center;
-        gap: 3px;
+        gap: 4px;
         flex-wrap: nowrap;
     }
 
     .cvat-multiframe-tile-header-center {
-        gap: 2px;
+        gap: 4px;
     }
 
     .cvat-multiframe-zoom-btn {
-        padding: 0 4px !important;
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        padding: 0 6px !important;
         height: 18px !important;
         line-height: 18px !important;
-        font-size: 13px !important;
-        color: #d9d9d9 !important;
+        font-size: 11px !important;
+        font-weight: 500;
+        color: #1890ff !important;
+        border: 1px solid #1890ff !important;
+        background: rgba(24, 144, 255, 0.15) !important;
+        border-radius: 3px;
 
         &:hover {
-            color: #1890ff !important;
-            background: rgba(255, 255, 255, 0.08) !important;
+            color: #fff !important;
+            background: #1890ff !important;
+            border-color: #1890ff !important;
         }
     }
 
     .cvat-multiframe-zoom-pct {
         font-size: 10px;
-        color: #8c8c8c;
+        color: #d9d9d9;
         min-width: 32px;
         text-align: center;
         user-select: none;
     }
 
     .cvat-multiframe-zoom-reset-btn {
-        padding: 0 3px !important;
+        padding: 0 4px !important;
         height: 18px !important;
         line-height: 18px !important;
         font-size: 10px !important;
@@ -195,16 +215,21 @@
     }
 
     .cvat-multiframe-jump-btn {
-        padding: 0 2px;
+        padding: 0 4px;
         height: 18px;
         font-size: 10px;
         color: #40a9ff;
+
+        &:hover {
+            color: #69c0ff;
+        }
     }
 }
 
 .cvat-multiframe-tile-content {
     position: relative;
     width: 100%;
+    height: 100%;
     flex: 1;
     min-height: 0;
     min-width: 0;
@@ -213,6 +238,37 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
+}
+
+.cvat-multiframe-tile-resize-handle {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    width: 16px;
+    height: 16px;
+    z-index: 15;
+    cursor: nwse-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255, 255, 255, 0.45);
+    background: rgba(0, 0, 0, 0.45);
+    border-radius: 2px;
+    transition: color 0.15s ease, background 0.15s ease;
+    user-select: none;
+    pointer-events: auto;
+
+    &:hover,
+    &.cvat-multiframe-tile-resizing {
+        color: #1890ff;
+        background: rgba(24, 144, 255, 0.3);
+    }
+
+    .cvat-multiframe-resize-icon {
+        width: 10px;
+        height: 10px;
+        pointer-events: none;
+    }
 }
 
 .cvat-multiframe-tile-loading,
@@ -257,4 +313,72 @@
 
 .cvat-multiframe-pulsing-highlight {
     animation: multiframePulse 1.4s infinite ease-in-out;
+}
+
+.cvat-multiframe-workspace-fullscreen {
+    padding: 0;
+}
+
+.cvat-multiframe-fullscreen-container {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    position: relative;
+    background: #1f1f1f;
+}
+
+.cvat-multiframe-fullscreen-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 6px 12px;
+    background: #141414;
+    border-bottom: 1px solid #303030;
+    z-index: 1000;
+    flex-shrink: 0;
+
+    .cvat-multiframe-fullscreen-banner-left,
+    .cvat-multiframe-fullscreen-banner-right {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .cvat-multiframe-fullscreen-title {
+        color: #fff;
+        font-size: 13px;
+        margin-left: 6px;
+    }
+}
+
+.cvat-multiframe-fullscreen-canvas-wrapper {
+    flex: 1 1 auto;
+    width: 100%;
+    height: calc(100% - 42px);
+    position: relative;
+    overflow: hidden;
+    display: flex;
+
+    .cvat-canvas-layout {
+        width: 100%;
+        height: 100%;
+        position: relative;
+    }
+}
+
+.cvat-multiframe-return-btn {
+    font-weight: 500;
+    background: #52c41a !important;
+    border-color: #52c41a !important;
+
+    &:hover,
+    &:focus {
+        background: #73d13d !important;
+        border-color: #73d13d !important;
+    }
 }

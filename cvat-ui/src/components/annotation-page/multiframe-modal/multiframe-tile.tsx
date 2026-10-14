@@ -3,20 +3,25 @@
 // SPDX-License-Identifier: MIT
 
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
+import { CombinedState } from 'reducers';
 import Tag from 'antd/lib/tag';
 import Spin from 'antd/lib/spin';
 import Alert from 'antd/lib/alert';
 import Button from 'antd/lib/button';
 import Text from 'antd/lib/typography/Text';
+import { FullscreenOutlined } from '@ant-design/icons';
 
-import { changeFrameAsync, activateObject, updateAnnotationsAsync } from 'actions/annotation-actions';
+import { activateObject, updateAnnotationsAsync } from 'actions/annotation-actions';
 import {
     resolveCrossFrameIdentity,
     getObjectBoundingBox,
+    resolveSkeletonWrappingBox,
     calculateAutoZoomViewport,
     zoomViewportAtPoint,
+    calculateResizeZoomViewport,
     panViewport,
+    centerViewportOnObject,
     calculateZoomPercentage,
     calculateContainedDimensions,
     ContainedLayout,
@@ -30,7 +35,9 @@ interface Props {
     isActiveFrame: boolean;
     selectedObject: any | null;
     autoZoomEnabled?: boolean;
+    autoFollowEnabled?: boolean;
     onNavigateToFrame(frame: number): void;
+    onZoomFrame?(frame: number): void;
     onFrameStatesLoaded?(frameNumber: number, states: any[]): void;
     onSelectObject?(state: any, elementState?: any): void;
 }
@@ -42,7 +49,9 @@ function MultiframeTile(props: Props): JSX.Element {
         isActiveFrame,
         selectedObject,
         autoZoomEnabled = true,
+        autoFollowEnabled = true,
         onNavigateToFrame,
+        onZoomFrame,
         onFrameStatesLoaded,
         onSelectObject,
     } = props;
@@ -60,10 +69,23 @@ function MultiframeTile(props: Props): JSX.Element {
     const [dimensions, setDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
     const [containerSize, setContainerSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
 
+    const activeFrameStates = useSelector((state: CombinedState) => (
+        isActiveFrame ? state.annotation.annotations.states : null
+    ));
+
+    // Synchronize frameStates with Redux active annotations state for the active frame (undo/redo, updates)
+    useEffect(() => {
+        if (isActiveFrame && Array.isArray(activeFrameStates) && activeFrameStates.length > 0) {
+            setFrameStates(activeFrameStates);
+        }
+    }, [isActiveFrame, activeFrameStates]);
+
     // Independent per-tile manual viewport state (Task B)
     const [manualViewport, setManualViewport] = useState<Viewport | null>(null);
     const [isPanning, setIsPanning] = useState<boolean>(false);
     const panStartRef = useRef<{ clientX: number; clientY: number; startViewport: Viewport } | null>(null);
+    const [isResizing, setIsResizing] = useState<boolean>(false);
+    const resizeStartRef = useRef<{ clientX: number; clientY: number; startViewport: Viewport } | null>(null);
 
     useEffect(() => {
         let isCancelled = false;
@@ -122,10 +144,10 @@ function MultiframeTile(props: Props): JSX.Element {
         };
     }, [frameNumber, jobInstance]);
 
-    // Reset manual viewport when selected object or auto-zoom toggle changes
+    // Reset manual viewport when selected object, auto-zoom, or auto-follow toggle changes
     useEffect(() => {
         setManualViewport(null);
-    }, [selectedObject, autoZoomEnabled]);
+    }, [selectedObject, autoZoomEnabled, autoFollowEnabled]);
 
     // 4. Pure identity resolution
     const matchResult = useMemo(
@@ -172,10 +194,9 @@ function MultiframeTile(props: Props): JSX.Element {
 
     const hasSelection = Boolean(selectedObject);
 
-    // 5. Per-frame auto-zoom viewport calculation
+    // 5. Per-frame auto-zoom / auto-follow viewport calculation
     const targetViewport = useMemo<Viewport>(() => {
         if (
-            !autoZoomEnabled ||
             !selectedObject ||
             matchResult.status !== 'MATCHED' ||
             dimensions.width <= 0 ||
@@ -189,8 +210,35 @@ function MultiframeTile(props: Props): JSX.Element {
             return { x: 0, y: 0, width: dimensions.width, height: dimensions.height };
         }
 
-        return calculateAutoZoomViewport(bbox, dimensions.width, dimensions.height);
-    }, [autoZoomEnabled, selectedObject, matchResult, dimensions, frameStates]);
+        if (autoZoomEnabled) {
+            return calculateAutoZoomViewport(bbox, dimensions.width, dimensions.height);
+        }
+
+        if (autoFollowEnabled) {
+            return centerViewportOnObject(
+                { x: 0, y: 0, width: dimensions.width, height: dimensions.height },
+                bbox,
+                dimensions.width,
+                dimensions.height,
+            );
+        }
+
+        return { x: 0, y: 0, width: dimensions.width, height: dimensions.height };
+    }, [autoZoomEnabled, autoFollowEnabled, selectedObject, matchResult, dimensions, frameStates]);
+
+    // Automatically pan manualViewport to follow the matched object when autoFollowEnabled is true
+    useEffect(() => {
+        if (!autoFollowEnabled || !manualViewport || matchResult.status !== 'MATCHED' || dimensions.width <= 0 || dimensions.height <= 0) {
+            return;
+        }
+        const bbox = getObjectBoundingBox(matchResult.targetState, matchResult.targetElementState, frameStates);
+        if (!bbox) return;
+
+        const centeredVp = centerViewportOnObject(manualViewport, bbox, dimensions.width, dimensions.height);
+        if (centeredVp.x !== manualViewport.x || centeredVp.y !== manualViewport.y) {
+            setManualViewport(centeredVp);
+        }
+    }, [autoFollowEnabled, frameStates, matchResult, dimensions]);
 
     // Effective Viewport: Manual zoom/pan overrides targetViewport until reset
     const effectiveViewport = useMemo<Viewport>(() => {
@@ -443,6 +491,84 @@ function MultiframeTile(props: Props): JSX.Element {
         setManualViewport(null);
     }, []);
 
+    // Drag-to-resize zoom handler
+    const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (e.button !== 0) return;
+        if (dimensions.width <= 0 || dimensions.height <= 0) return;
+
+        setIsResizing(true);
+        resizeStartRef.current = {
+            clientX: e.clientX,
+            clientY: e.clientY,
+            startViewport: { ...effectiveViewport },
+        };
+    }, [dimensions, effectiveViewport]);
+
+    useEffect(() => {
+        if (!isResizing) return;
+
+        const originalCursor = document.body.style.cursor;
+        const originalUserSelect = document.body.style.userSelect;
+        document.body.style.cursor = 'nwse-resize';
+        document.body.style.userSelect = 'none';
+
+        const onMouseMove = (e: MouseEvent) => {
+            if (!resizeStartRef.current) return;
+            const dx = e.clientX - resizeStartRef.current.clientX;
+            const dy = e.clientY - resizeStartRef.current.clientY;
+
+            const newVp = calculateResizeZoomViewport(
+                resizeStartRef.current.startViewport,
+                dx,
+                dy,
+                dimensions.width,
+                dimensions.height,
+            );
+            setManualViewport(newVp);
+        };
+
+        const onMouseUp = () => {
+            setIsResizing(false);
+            resizeStartRef.current = null;
+        };
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+
+        return () => {
+            document.body.style.cursor = originalCursor;
+            document.body.style.userSelect = originalUserSelect;
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
+        };
+    }, [isResizing, dimensions]);
+
+    // Auto-Follow: Smoothly pan viewport to follow the object center during live dragging
+    const handleAutoFollow = useCallback((objCenterX: number, objCenterY: number) => {
+        if (!autoFollowEnabled || dimensions.width <= 0 || dimensions.height <= 0) return;
+
+        const currentVp = effectiveViewport;
+        const vpW = currentVp.width > 0 ? currentVp.width : dimensions.width;
+        const vpH = currentVp.height > 0 ? currentVp.height : dimensions.height;
+
+        const targetX = objCenterX - vpW / 2;
+        const targetY = objCenterY - vpH / 2;
+
+        const clampedX = Math.max(0, Math.min(dimensions.width - vpW, Math.round(targetX)));
+        const clampedY = Math.max(0, Math.min(dimensions.height - vpH, Math.round(targetY)));
+
+        if (Math.abs(clampedX - currentVp.x) >= 1 || Math.abs(clampedY - currentVp.y) >= 1) {
+            setManualViewport({
+                x: clampedX,
+                y: clampedY,
+                width: vpW,
+                height: vpH,
+            });
+        }
+    }, [autoFollowEnabled, dimensions, effectiveViewport]);
+
     // Direct Annotation Editing Handler (Task A)
     const handleEditLandmark = useCallback((
         parentState: any,
@@ -477,8 +603,8 @@ function MultiframeTile(props: Props): JSX.Element {
             return nextStates;
         });
 
-        // 3. Dispatch to CVAT's core annotation pipeline
-        dispatch(changeFrameAsync(frameNumber));
+        // 3. Dispatch to CVAT's core annotation pipeline immediately
+        // Each individual landmark edit remains independently undoable in native CVAT history
         dispatch(activateObject(parentState.clientID, elementState.clientID, null));
         dispatch(updateAnnotationsAsync([elementState]));
     }, [dispatch, frameNumber, onFrameStatesLoaded]);
@@ -504,8 +630,7 @@ function MultiframeTile(props: Props): JSX.Element {
             return nextStates;
         });
 
-        // 3. Dispatch to CVAT's core annotation pipeline
-        dispatch(changeFrameAsync(frameNumber));
+        // 3. Dispatch to CVAT's core annotation pipeline immediately
         dispatch(activateObject(shapeState.clientID, null, null));
         dispatch(updateAnnotationsAsync([shapeState]));
     }, [dispatch, frameNumber, onFrameStatesLoaded]);
@@ -517,14 +642,23 @@ function MultiframeTile(props: Props): JSX.Element {
     ) => {
         if (!isActiveFrame || !parentState || !Array.isArray(parentState.elements)) return;
 
+        // Resolve current outer bounding box before translating
+        const currentOuterBox = resolveSkeletonWrappingBox(parentState, frameStates);
+        const newOuterBox = currentOuterBox ? {
+            xtl: Math.round(currentOuterBox.xtl + dx),
+            ytl: Math.round(currentOuterBox.ytl + dy),
+            xbr: Math.round(currentOuterBox.xbr + dx),
+            ybr: Math.round(currentOuterBox.ybr + dy),
+        } : null;
+
         // 1. Compute and update each element's points
-        const updatedElements: any[] = [];
+        const elementTargetPoints = new Map<number, [number, number]>();
         for (const el of parentState.elements) {
             if (Array.isArray(el.points) && el.points.length >= 2) {
                 const newX = Math.round(el.points[0] + dx);
                 const newY = Math.round(el.points[1] + dy);
+                elementTargetPoints.set(el.clientID, [newX, newY]);
                 el.points = [newX, newY];
-                updatedElements.push(el);
             }
         }
 
@@ -534,42 +668,73 @@ function MultiframeTile(props: Props): JSX.Element {
             (st.clientID === parentState.clientID || st.clientID === parentState.parentID || parentState.parentID === st.clientID ||
              (st.group?.id && parentState.group?.id && st.group.id === parentState.group.id))
         ));
+
+        let newRectPoints: [number, number, number, number] | null = null;
         if (associatedRect && Array.isArray(associatedRect.points) && associatedRect.points.length === 4) {
-            associatedRect.points = [
+            newRectPoints = [
                 Math.round(associatedRect.points[0] + dx),
                 Math.round(associatedRect.points[1] + dy),
                 Math.round(associatedRect.points[2] + dx),
                 Math.round(associatedRect.points[3] + dy),
             ];
-            updatedElements.push(associatedRect);
+            associatedRect.points = [...newRectPoints];
+            if (newOuterBox) {
+                associatedRect.wrappingRect = { ...newOuterBox };
+                associatedRect.boundingBox = { ...newOuterBox };
+            }
         }
 
-        // 2. Optimistically update local tile frameStates
+        // Ensure parentState has updated wrappingRect & boundingBox using the exact same translation offset
+        if (newOuterBox) {
+            parentState.wrappingRect = { ...newOuterBox };
+            parentState.boundingBox = { ...newOuterBox };
+        }
+
+        // 2. Set all skeleton points on parentState if setter is supported, or flatten points
+        try {
+            const allPoints: number[] = [];
+            for (const el of parentState.elements) {
+                if (Array.isArray(el.points) && el.points.length >= 2) {
+                    allPoints.push(el.points[0], el.points[1]);
+                }
+            }
+            if (allPoints.length > 0 && Array.isArray(parentState.points) && parentState.points.length === allPoints.length) {
+                parentState.points = allPoints;
+            } else if (newOuterBox && Array.isArray(parentState.points) && parentState.points.length === 4) {
+                parentState.points = [newOuterBox.xtl, newOuterBox.ytl, newOuterBox.xbr, newOuterBox.ybr];
+            }
+        } catch (_e) {
+            // ignore if points setter expects specific format
+        }
+
+        // 3. Optimistically update local tile frameStates using the precomputed target points (no duplicate offset)
         setFrameStates((prevStates) => {
             const nextStates = prevStates.map((st) => {
                 if (st.clientID === parentState.clientID && Array.isArray(st.elements)) {
                     return {
                         ...st,
+                        wrappingRect: newOuterBox ? { ...newOuterBox } : st.wrappingRect,
+                        boundingBox: newOuterBox ? { ...newOuterBox } : st.boundingBox,
+                        points: (newOuterBox && Array.isArray(st.points) && st.points.length === 4) ?
+                            [newOuterBox.xtl, newOuterBox.ytl, newOuterBox.xbr, newOuterBox.ybr] : st.points,
                         elements: st.elements.map((el: any) => {
-                            if (Array.isArray(el.points) && el.points.length >= 2) {
+                            const target = elementTargetPoints.get(el.clientID);
+                            if (target) {
                                 return {
                                     ...el,
-                                    points: [Math.round(el.points[0] + dx), Math.round(el.points[1] + dy)],
+                                    points: [target[0], target[1]],
                                 };
                             }
                             return el;
                         }),
                     };
                 }
-                if (associatedRect && st.clientID === associatedRect.clientID && Array.isArray(st.points)) {
+                if (associatedRect && st.clientID === associatedRect.clientID && newRectPoints) {
                     return {
                         ...st,
-                        points: [
-                            Math.round(st.points[0] + dx),
-                            Math.round(st.points[1] + dy),
-                            Math.round(st.points[2] + dx),
-                            Math.round(st.points[3] + dy),
-                        ],
+                        wrappingRect: newOuterBox ? { ...newOuterBox } : st.wrappingRect,
+                        boundingBox: newOuterBox ? { ...newOuterBox } : st.boundingBox,
+                        points: [...newRectPoints],
                     };
                 }
                 return st;
@@ -580,17 +745,19 @@ function MultiframeTile(props: Props): JSX.Element {
             return nextStates;
         });
 
-        // 3. Dispatch to CVAT's core annotation pipeline
-        dispatch(changeFrameAsync(frameNumber));
+        // 4. Dispatch to CVAT's core annotation pipeline immediately.
+        // In native CVAT (SkeletonShape.save), saving the parent skeleton wraps all landmark updates
+        // in a single history transaction (this.history.beginTransaction), ensuring the entire drag
+        // is recorded as exactly ONE undoable operation.
         dispatch(activateObject(parentState.clientID, null, null));
-        dispatch(updateAnnotationsAsync(updatedElements));
+        const statesToSave = associatedRect ? [parentState, associatedRect] : [parentState];
+        dispatch(updateAnnotationsAsync(statesToSave, Boolean(associatedRect)));
     }, [dispatch, frameNumber, frameStates, isActiveFrame, onFrameStatesLoaded]);
 
     const handleSelectObject = useCallback((state: any, elementState?: any) => {
         if (!isActiveFrame) {
             onNavigateToFrame(frameNumber);
         }
-        dispatch(changeFrameAsync(frameNumber));
         if (elementState) {
             dispatch(activateObject(state.clientID, elementState.clientID, null));
         } else {
@@ -610,105 +777,14 @@ function MultiframeTile(props: Props): JSX.Element {
                 }
             }}
             onDoubleClick={() => {
-                if (!isActiveFrame) {
+                if (onZoomFrame) {
+                    onZoomFrame(frameNumber);
+                } else if (!isActiveFrame) {
                     onNavigateToFrame(frameNumber);
                 }
             }}
         >
-            {/* Tile Header Bar */}
-            <div className='cvat-multiframe-tile-header'>
-                <div className='cvat-multiframe-tile-header-left'>
-                    <Text strong className='cvat-multiframe-tile-frame-num'>
-                        {`#${frameNumber}`}
-                    </Text>
-                    {isActiveFrame ? (
-                        <Tag color='success' className='cvat-multiframe-badge'>
-                            ACTIVE
-                        </Tag>
-                    ) : (
-                        <Tag className='cvat-multiframe-badge'>REF</Tag>
-                    )}
-                </div>
-
-                {/* Per-Tile Zoom Controls (Task B) */}
-                <div className='cvat-multiframe-tile-header-center'>
-                    <Button
-                        size='small'
-                        type='text'
-                        className='cvat-multiframe-zoom-btn'
-                        onClick={handleZoomOut}
-                        title='Zoom Out'
-                    >
-                        −
-                    </Button>
-                    <span className='cvat-multiframe-zoom-pct'>
-                        {`${zoomPct}%`}
-                    </span>
-                    <Button
-                        size='small'
-                        type='text'
-                        className='cvat-multiframe-zoom-btn'
-                        onClick={handleZoomIn}
-                        title='Zoom In'
-                    >
-                        +
-                    </Button>
-                    {manualViewport !== null && (
-                        <Button
-                            size='small'
-                            type='link'
-                            className='cvat-multiframe-zoom-reset-btn'
-                            onClick={handleZoomReset}
-                            title='Reset View'
-                        >
-                            Reset
-                        </Button>
-                    )}
-                </div>
-
-                <div className='cvat-multiframe-tile-header-right'>
-                    {selectedObject && (
-                        <>
-                            {matchResult.status === 'MATCHED' && (
-                                <>
-                                    <Tag color={matchResult.isOccluded ? 'warning' : 'cyan'}>
-                                        {matchResult.isOccluded ? 'Occluded' : 'Matched'}
-                                    </Tag>
-                                    {(manualViewport !== null || (autoZoomEnabled && targetViewport.width < dimensions.width)) && (
-                                        <Tag color='geekblue' className='cvat-multiframe-badge'>
-                                            Zoomed
-                                        </Tag>
-                                    )}
-                                </>
-                            )}
-                            {matchResult.status === 'ABSENT_ON_FRAME' && (
-                                <Tag color='error'>Absent</Tag>
-                            )}
-                            {matchResult.status === 'SKELETON_ABSENT' && (
-                                <Tag color='error'>Skeleton Absent</Tag>
-                            )}
-                            {matchResult.status === 'NO_IDENTITY' && (
-                                <Tag color='default'>No Link</Tag>
-                            )}
-                        </>
-                    )}
-                    {!isActiveFrame && (
-                        <Button
-                            type='link'
-                            size='small'
-                            className='cvat-multiframe-jump-btn'
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                onNavigateToFrame(frameNumber);
-                            }}
-                        >
-                            Jump
-                        </Button>
-                    )}
-                </div>
-            </div>
-
-            {/* Tile Surface */}
+            {/* Tile Surface (takes full tile space, preserving aspect ratio) */}
             <div
                 ref={contentRef}
                 className='cvat-multiframe-tile-content'
@@ -757,9 +833,126 @@ function MultiframeTile(props: Props): JSX.Element {
                             onEditLandmark={isActiveFrame ? handleEditLandmark : undefined}
                             onEditShape={isActiveFrame ? handleEditShape : undefined}
                             onEditSkeleton={isActiveFrame ? handleEditSkeleton : undefined}
+                            onAutoFollow={isActiveFrame ? handleAutoFollow : undefined}
                         />
                     )}
                 </div>
+
+                {/* Compact Floating Controls Overlay on top of the image */}
+                <div
+                    className='cvat-multiframe-tile-header cvat-multiframe-tile-overlay-controls'
+                    onClick={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => e.stopPropagation()}
+                    onMouseDown={(e) => e.stopPropagation()}
+                >
+                    <div className='cvat-multiframe-tile-header-left'>
+                        <Text strong className='cvat-multiframe-tile-frame-num'>
+                            {`#${frameNumber}`}
+                        </Text>
+                        {isActiveFrame ? (
+                            <Tag color='success' className='cvat-multiframe-badge'>
+                                ACTIVE
+                            </Tag>
+                        ) : (
+                            <Tag className='cvat-multiframe-badge'>REF</Tag>
+                        )}
+                    </div>
+
+                    {/* Per-Tile Frame Zoom Control */}
+                    <div className='cvat-multiframe-tile-header-center'>
+                        <Button
+                            size='small'
+                            type='primary'
+                            ghost
+                            className='cvat-multiframe-zoom-btn'
+                            icon={<FullscreenOutlined />}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                if (onZoomFrame) {
+                                    onZoomFrame(frameNumber);
+                                }
+                            }}
+                            title='Open frame in full-size annotation view'
+                        >
+                            Zoom
+                        </Button>
+                        <span className='cvat-multiframe-zoom-pct'>
+                            {`${zoomPct}%`}
+                        </span>
+                        {manualViewport !== null && (
+                            <Button
+                                size='small'
+                                type='link'
+                                className='cvat-multiframe-zoom-reset-btn'
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleZoomReset(e);
+                                }}
+                                title='Reset View'
+                            >
+                                Reset
+                            </Button>
+                        )}
+                    </div>
+
+                    <div className='cvat-multiframe-tile-header-right'>
+                        {selectedObject && (
+                            <>
+                                {matchResult.status === 'MATCHED' && (
+                                    <>
+                                        <Tag color={matchResult.isOccluded ? 'warning' : 'cyan'}>
+                                            {matchResult.isOccluded ? 'Occluded' : 'Matched'}
+                                        </Tag>
+                                        {(manualViewport !== null || (autoZoomEnabled && targetViewport.width < dimensions.width)) && (
+                                            <Tag color='geekblue' className='cvat-multiframe-badge'>
+                                                Zoomed
+                                            </Tag>
+                                        )}
+                                    </>
+                                )}
+                                {matchResult.status === 'ABSENT_ON_FRAME' && (
+                                    <Tag color='error'>Absent</Tag>
+                                )}
+                                {matchResult.status === 'SKELETON_ABSENT' && (
+                                    <Tag color='error'>Skeleton Absent</Tag>
+                                )}
+                                {matchResult.status === 'NO_IDENTITY' && (
+                                    <Tag color='default'>No Link</Tag>
+                                )}
+                            </>
+                        )}
+                        {!isActiveFrame && (
+                            <Button
+                                type='link'
+                                size='small'
+                                className='cvat-multiframe-jump-btn'
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    onNavigateToFrame(frameNumber);
+                                }}
+                            >
+                                Jump
+                            </Button>
+                        )}
+                    </div>
+                </div>
+
+                {/* Drag-to-resize zoom handle at bottom-right corner of tile */}
+                {!loading && !error && (
+                    <div
+                        className={`cvat-multiframe-tile-resize-handle ${isResizing ? 'cvat-multiframe-tile-resizing' : ''}`}
+                        onMouseDown={handleResizeMouseDown}
+                        onClick={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => e.stopPropagation()}
+                        title='Drag to resize zoom'
+                    >
+                        <svg viewBox='0 0 10 10' className='cvat-multiframe-resize-icon'>
+                            <line x1='8' y1='2' x2='2' y2='8' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />
+                            <line x1='9' y1='5' x2='5' y2='9' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />
+                            <line x1='9' y1='8' x2='8' y2='9' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />
+                        </svg>
+                    </div>
+                )}
             </div>
         </div>
     );

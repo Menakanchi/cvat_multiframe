@@ -21,6 +21,7 @@ interface Props {
     onEditLandmark?(parentState: any, elementState: any, newPoints: [number, number]): void;
     onEditShape?(shapeState: any, newPoints: number[]): void;
     onEditSkeleton?(parentState: any, dx: number, dy: number): void;
+    onAutoFollow?(objectCenterX: number, objectCenterY: number): void;
 }
 
 interface SkeletonEdge {
@@ -33,6 +34,8 @@ interface DragState {
     elementState: any;
     initialPoint: [number, number];
     currentPoint: [number, number];
+    startClientPt?: { x: number; y: number };
+    startScale?: { x: number; y: number };
 }
 
 interface DragShapeState {
@@ -41,6 +44,8 @@ interface DragShapeState {
     initialPoints: [number, number, number, number];
     startSvgPt: { x: number; y: number };
     currentPoints: [number, number, number, number];
+    startClientPt?: { x: number; y: number };
+    startScale?: { x: number; y: number };
 }
 
 interface DragSkeletonState {
@@ -49,44 +54,201 @@ interface DragSkeletonState {
     initialElementsPoints: Array<{ clientID: number; points: [number, number] }>;
     currentOffset: [number, number];
     initialOuterBox: { xtl: number; ytl: number; xbr: number; ybr: number };
+    startClientPt?: { x: number; y: number };
+    startScale?: { x: number; y: number };
 }
 
-function parseSkeletonEdges(label: any): SkeletonEdge[] {
+export interface SkeletonEdge {
+    from: number;
+    to: number;
+    fromNode?: string;
+    toNode?: string;
+}
+
+export interface SkeletonNodeInfo {
+    nodeId: string;
+    labelId?: number;
+    labelName?: string;
+    elementId?: number;
+    index: number;
+}
+
+export function parseSkeletonTemplate(label: any): {
+    edges: SkeletonEdge[];
+    nodes: SkeletonNodeInfo[];
+} {
     const edges: SkeletonEdge[] = [];
-    if (!label?.structure?.svg) {
-        return edges;
+    const nodes: SkeletonNodeInfo[] = [];
+
+    if (!label) return { edges, nodes };
+
+    const svgSource = label.structure?.svg || label.svg || label.template;
+    if (!svgSource) return { edges, nodes };
+
+    // Case 1: svgSource is a DOM element (SVGSVGElement / Element in browser)
+    if (typeof svgSource === 'object' && svgSource !== null && typeof svgSource.querySelectorAll === 'function') {
+        try {
+            const circleElements = Array.from(svgSource.querySelectorAll('circle')) as Element[];
+            circleElements.forEach((circle, index) => {
+                const nodeId = circle.getAttribute('data-node-id') || String(index + 1);
+                const labelIdStr = circle.getAttribute('data-label-id');
+                const labelName = circle.getAttribute('data-label-name') || undefined;
+                const elementIdStr = circle.getAttribute('data-element-id');
+
+                nodes.push({
+                    nodeId,
+                    labelId: labelIdStr ? Number(labelIdStr) : undefined,
+                    labelName,
+                    elementId: elementIdStr ? Number(elementIdStr) : undefined,
+                    index,
+                });
+            });
+
+            const lineElements = Array.from(svgSource.querySelectorAll('line')) as Element[];
+            lineElements.forEach((line) => {
+                const fromStr = line.getAttribute('data-node-from');
+                const toStr = line.getAttribute('data-node-to');
+                if (fromStr && toStr) {
+                    edges.push({
+                        from: Number(fromStr),
+                        to: Number(toStr),
+                        fromNode: fromStr,
+                        toNode: toStr,
+                    });
+                }
+            });
+        } catch (_e) {
+            // fallback below
+        }
     }
 
-    try {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(label.structure.svg, 'image/svg+xml');
+    // Case 2: String or fallback via innerHTML / outerHTML
+    if (edges.length === 0 && nodes.length === 0) {
+        let svgString = '';
+        if (typeof svgSource === 'string') {
+            svgString = svgSource;
+        } else if (typeof svgSource === 'object' && svgSource !== null) {
+            svgString = svgSource.innerHTML || svgSource.outerHTML || '';
+        }
 
-        // Build mapping from data-node-id to data-label-id (or data-element-id)
-        const nodeToLabelMap: Record<number, number> = {};
-        const circles = doc.querySelectorAll('circle');
-        circles.forEach((circle) => {
-            const nodeId = Number(circle.getAttribute('data-node-id'));
-            const labelId = Number(circle.getAttribute('data-label-id'));
-            if (Number.isInteger(nodeId) && Number.isInteger(labelId)) {
-                nodeToLabelMap[nodeId] = labelId;
-            }
-        });
+        if (svgString) {
+            if (typeof DOMParser !== 'undefined') {
+                try {
+                    const parser = new DOMParser();
+                    const wrapped = svgString.includes('<svg') ? svgString : `<svg>${svgString}</svg>`;
+                    const doc = parser.parseFromString(wrapped, 'image/svg+xml');
+                    const circleElements = Array.from(doc.querySelectorAll('circle'));
+                    circleElements.forEach((circle, index) => {
+                        const nodeId = circle.getAttribute('data-node-id') || String(index + 1);
+                        const labelIdStr = circle.getAttribute('data-label-id');
+                        const labelName = circle.getAttribute('data-label-name') || undefined;
+                        const elementIdStr = circle.getAttribute('data-element-id');
+                        nodes.push({
+                            nodeId,
+                            labelId: labelIdStr ? Number(labelIdStr) : undefined,
+                            labelName,
+                            elementId: elementIdStr ? Number(elementIdStr) : undefined,
+                            index,
+                        });
+                    });
 
-        const lineElements = doc.querySelectorAll('line[data-type="edge"]');
-        lineElements.forEach((line) => {
-            const from = Number(line.getAttribute('data-node-from'));
-            const to = Number(line.getAttribute('data-node-to'));
-            if (Number.isInteger(from) && Number.isInteger(to)) {
-                const mappedFrom = nodeToLabelMap[from] ?? from;
-                const mappedTo = nodeToLabelMap[to] ?? to;
-                edges.push({ from: mappedFrom, to: mappedTo });
+                    const lineElements = Array.from(doc.querySelectorAll('line'));
+                    lineElements.forEach((line) => {
+                        const fromStr = line.getAttribute('data-node-from');
+                        const toStr = line.getAttribute('data-node-to');
+                        if (fromStr && toStr) {
+                            edges.push({
+                                from: Number(fromStr),
+                                to: Number(toStr),
+                                fromNode: fromStr,
+                                toNode: toStr,
+                            });
+                        }
+                    });
+                } catch (_e) {
+                    // ignore
+                }
             }
-        });
-    } catch (_e) {
-        // Fallback gracefully if svg parsing fails
+
+            // Regex fallback if DOMParser was unavailable or returned no elements
+            if (nodes.length === 0 && edges.length === 0) {
+                const circleRegex = /<circle\b([^>]*)\/?>/gi;
+                let cMatch: RegExpExecArray | null;
+                let cIdx = 0;
+                while ((cMatch = circleRegex.exec(svgString)) !== null) {
+                    const attrs = cMatch[1];
+                    const nodeIdMatch = /data-node-id=["']?(\d+)["']?/i.exec(attrs);
+                    const labelIdMatch = /data-label-id=["']?(\d+)["']?/i.exec(attrs);
+                    const labelNameMatch = /data-label-name=["']([^"']+)["']/i.exec(attrs);
+                    const elementIdMatch = /data-element-id=["']?(\d+)["']?/i.exec(attrs);
+
+                    nodes.push({
+                        nodeId: nodeIdMatch ? nodeIdMatch[1] : String(cIdx + 1),
+                        labelId: labelIdMatch ? Number(labelIdMatch[1]) : undefined,
+                        labelName: labelNameMatch ? labelNameMatch[1] : undefined,
+                        elementId: elementIdMatch ? Number(elementIdMatch[1]) : undefined,
+                        index: cIdx++,
+                    });
+                }
+
+                const lineRegex = /<line\b([^>]*)\/?>/gi;
+                let lMatch: RegExpExecArray | null;
+                while ((lMatch = lineRegex.exec(svgString)) !== null) {
+                    const attrs = lMatch[1];
+                    const fromMatch = /data-node-from=["']?(\d+)["']?/i.exec(attrs);
+                    const toMatch = /data-node-to=["']?(\d+)["']?/i.exec(attrs);
+                    if (fromMatch && toMatch) {
+                        edges.push({
+                            from: Number(fromMatch[1]),
+                            to: Number(toMatch[1]),
+                            fromNode: fromMatch[1],
+                            toNode: toMatch[1],
+                        });
+                    }
+                }
+            }
+        }
     }
 
-    return edges;
+    // Enrich nodes with sublabels if available
+    const sublabels = label.structure?.sublabels || label.sublabels;
+    if (Array.isArray(sublabels) && sublabels.length > 0) {
+        nodes.forEach((node) => {
+            const sub = (node.elementId !== undefined && sublabels[node.elementId - 1]) ||
+                (node.index < sublabels.length && sublabels[node.index]);
+            if (sub) {
+                if (node.labelId === undefined && sub.id !== undefined) {
+                    node.labelId = Number(sub.id);
+                }
+                if (!node.labelName && sub.name) {
+                    node.labelName = sub.name;
+                }
+            }
+        });
+    }
+
+    // Map edge.from and edge.to to sublabelId if node has labelId (ensuring backwards compatibility with sublabel ID lookups)
+    const nodeToLabelIdMap = new Map<string, number>();
+    nodes.forEach((node) => {
+        if (node.labelId !== undefined) {
+            nodeToLabelIdMap.set(node.nodeId, node.labelId);
+        }
+    });
+
+    edges.forEach((edge) => {
+        if (edge.fromNode && nodeToLabelIdMap.has(edge.fromNode)) {
+            edge.from = nodeToLabelIdMap.get(edge.fromNode)!;
+        }
+        if (edge.toNode && nodeToLabelIdMap.has(edge.toNode)) {
+            edge.to = nodeToLabelIdMap.get(edge.toNode)!;
+        }
+    });
+
+    return { edges, nodes };
+}
+
+export function parseSkeletonEdges(label: any): SkeletonEdge[] {
+    return parseSkeletonTemplate(label).edges;
 }
 
 function MultiframeSvgOverlay(props: Props): JSX.Element {
@@ -106,6 +268,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
         onEditLandmark,
         onEditShape,
         onEditSkeleton,
+        onAutoFollow,
     } = props;
 
     const svgRef = useRef<SVGSVGElement | null>(null);
@@ -128,13 +291,14 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
     const zoomScale = (vpW > 0 && width > 0) ? Math.max(1, width / vpW) : 1;
     const scaleFactor = 1 / Math.sqrt(zoomScale);
 
-    // Cache parsed edges per skeleton label id
-    const skeletonEdgesCache = useMemo(() => {
-        const cache: Record<number, SkeletonEdge[]> = {};
+    // Cache parsed template per skeleton label
+    const skeletonTemplatesCache = useMemo(() => {
+        const cache: Record<string, { edges: SkeletonEdge[]; nodes: SkeletonNodeInfo[] }> = {};
         for (const state of states) {
-            if (state.shapeType === 'skeleton' && state.label?.id) {
-                if (!(state.label.id in cache)) {
-                    cache[state.label.id] = parseSkeletonEdges(state.label);
+            if (state.shapeType === 'skeleton' && state.label) {
+                const key = String(state.label.id ?? state.label.name ?? state.clientID);
+                if (!(key in cache)) {
+                    cache[key] = parseSkeletonTemplate(state.label);
                 }
             }
         }
@@ -150,13 +314,20 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
     ) => {
         e.stopPropagation();
         e.preventDefault();
+        const svg = svgRef.current;
+        const rect = svg?.getBoundingClientRect();
+        const startScaleX = (rect && rect.width > 0) ? (viewport?.width || width) / rect.width : 1;
+        const startScaleY = (rect && rect.height > 0) ? (viewport?.height || height) / rect.height : 1;
+
         setDragState({
             parentState,
             elementState,
             initialPoint: [initialX, initialY],
             currentPoint: [initialX, initialY],
+            startClientPt: { x: e.clientX, y: e.clientY },
+            startScale: { x: startScaleX, y: startScaleY },
         });
-    }, []);
+    }, [viewport, width, height]);
 
     const handleShapeMouseDown = useCallback((
         e: React.MouseEvent,
@@ -173,6 +344,9 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
         const ctm = svg.getScreenCTM();
         if (!ctm) return;
         const svgPt = pt.matrixTransform(ctm.inverse());
+        const rect = svg.getBoundingClientRect();
+        const startScaleX = rect.width > 0 ? (viewport?.width || width) / rect.width : 1;
+        const startScaleY = rect.height > 0 ? (viewport?.height || height) / rect.height : 1;
 
         const initialPoints: [number, number, number, number] = [
             shapeState.points[0],
@@ -186,9 +360,11 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
             handleType,
             initialPoints,
             startSvgPt: { x: svgPt.x, y: svgPt.y },
+            startClientPt: { x: e.clientX, y: e.clientY },
+            startScale: { x: startScaleX, y: startScaleY },
             currentPoints: [...initialPoints],
         });
-    }, []);
+    }, [viewport, width, height]);
 
     const handleSkeletonMouseDown = useCallback((
         e: React.MouseEvent,
@@ -206,6 +382,9 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
         const ctm = svg.getScreenCTM();
         if (!ctm) return;
         const svgPt = pt.matrixTransform(ctm.inverse());
+        const rect = svg.getBoundingClientRect();
+        const startScaleX = rect.width > 0 ? (viewport?.width || width) / rect.width : 1;
+        const startScaleY = rect.height > 0 ? (viewport?.height || height) / rect.height : 1;
 
         const initialElementsPoints = skeletonState.elements
             .filter((el: any) => !el.outside && Array.isArray(el.points) && el.points.length >= 2)
@@ -217,11 +396,13 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
         setDragSkeletonState({
             parentState: skeletonState,
             startSvgPt: { x: svgPt.x, y: svgPt.y },
+            startClientPt: { x: e.clientX, y: e.clientY },
+            startScale: { x: startScaleX, y: startScaleY },
             initialElementsPoints,
             currentOffset: [0, 0],
             initialOuterBox: { ...outerBox },
         });
-    }, [onEditSkeleton]);
+    }, [onEditSkeleton, viewport, width, height]);
 
     useEffect(() => {
         if (!dragState && !dragShapeState && !dragSkeletonState) return;
@@ -229,29 +410,75 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
         const onMouseMove = (e: MouseEvent) => {
             if (!svgRef.current) return;
             const svg = svgRef.current;
-            const ctm = svg.getScreenCTM();
-            if (!ctm) return;
-            const pt = svg.createSVGPoint();
-            pt.x = e.clientX;
-            pt.y = e.clientY;
-            const svgPt = pt.matrixTransform(ctm.inverse());
 
             // Handle landmark dragging
             if (dragStateRef.current) {
-                const clampedX = Math.round(Math.max(0, Math.min(width, svgPt.x)));
-                const clampedY = Math.round(Math.max(0, Math.min(height, svgPt.y)));
+                const currentDrag = dragStateRef.current;
+                let clampedX: number;
+                let clampedY: number;
+
+                if (currentDrag.startClientPt && currentDrag.startScale) {
+                    const dx = (e.clientX - currentDrag.startClientPt.x) * currentDrag.startScale.x;
+                    const dy = (e.clientY - currentDrag.startClientPt.y) * currentDrag.startScale.y;
+                    clampedX = Math.round(Math.max(0, Math.min(width, currentDrag.initialPoint[0] + dx)));
+                    clampedY = Math.round(Math.max(0, Math.min(height, currentDrag.initialPoint[1] + dy)));
+                } else {
+                    const ctm = svg.getScreenCTM();
+                    if (!ctm) return;
+                    const pt = svg.createSVGPoint();
+                    pt.x = e.clientX;
+                    pt.y = e.clientY;
+                    const svgPt = pt.matrixTransform(ctm.inverse());
+                    clampedX = Math.round(Math.max(0, Math.min(width, svgPt.x)));
+                    clampedY = Math.round(Math.max(0, Math.min(height, svgPt.y)));
+                }
 
                 setDragState((prev) => (prev ? {
                     ...prev,
                     currentPoint: [clampedX, clampedY],
                 } : null));
+
+                if (onAutoFollow) {
+                    if (Array.isArray(currentDrag.parentState?.elements)) {
+                        let minX = clampedX;
+                        let maxX = clampedX;
+                        let minY = clampedY;
+                        let maxY = clampedY;
+                        for (const el of currentDrag.parentState.elements) {
+                            if (el.clientID !== currentDrag.elementState?.clientID && !el.outside && Array.isArray(el.points) && el.points.length >= 2) {
+                                minX = Math.min(minX, el.points[0]);
+                                maxX = Math.max(maxX, el.points[0]);
+                                minY = Math.min(minY, el.points[1]);
+                                maxY = Math.max(maxY, el.points[1]);
+                            }
+                        }
+                        onAutoFollow((minX + maxX) / 2, (minY + maxY) / 2);
+                    } else {
+                        onAutoFollow(clampedX, clampedY);
+                    }
+                }
             }
 
             // Handle shape moving/resizing
             if (dragShapeStateRef.current) {
                 const currentDrag = dragShapeStateRef.current;
-                const dx = svgPt.x - currentDrag.startSvgPt.x;
-                const dy = svgPt.y - currentDrag.startSvgPt.y;
+                let dx = 0;
+                let dy = 0;
+
+                if (currentDrag.startClientPt && currentDrag.startScale) {
+                    dx = (e.clientX - currentDrag.startClientPt.x) * currentDrag.startScale.x;
+                    dy = (e.clientY - currentDrag.startClientPt.y) * currentDrag.startScale.y;
+                } else {
+                    const ctm = svg.getScreenCTM();
+                    if (!ctm) return;
+                    const pt = svg.createSVGPoint();
+                    pt.x = e.clientX;
+                    pt.y = e.clientY;
+                    const svgPt = pt.matrixTransform(ctm.inverse());
+                    dx = svgPt.x - currentDrag.startSvgPt.x;
+                    dy = svgPt.y - currentDrag.startSvgPt.y;
+                }
+
                 let [xtl, ytl, xbr, ybr] = currentDrag.initialPoints;
 
                 if (currentDrag.handleType === 'move') {
@@ -283,13 +510,31 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                     ...prev,
                     currentPoints: [xtl, ytl, xbr, ybr],
                 } : null));
+
+                if (onAutoFollow) {
+                    onAutoFollow((xtl + xbr) / 2, (ytl + ybr) / 2);
+                }
             }
 
             // Handle whole skeleton moving
             if (dragSkeletonStateRef.current) {
                 const currentDrag = dragSkeletonStateRef.current;
-                const dx = svgPt.x - currentDrag.startSvgPt.x;
-                const dy = svgPt.y - currentDrag.startSvgPt.y;
+                let dx = 0;
+                let dy = 0;
+
+                if (currentDrag.startClientPt && currentDrag.startScale) {
+                    dx = (e.clientX - currentDrag.startClientPt.x) * currentDrag.startScale.x;
+                    dy = (e.clientY - currentDrag.startClientPt.y) * currentDrag.startScale.y;
+                } else {
+                    const ctm = svg.getScreenCTM();
+                    if (!ctm) return;
+                    const pt = svg.createSVGPoint();
+                    pt.x = e.clientX;
+                    pt.y = e.clientY;
+                    const svgPt = pt.matrixTransform(ctm.inverse());
+                    dx = svgPt.x - currentDrag.startSvgPt.x;
+                    dy = svgPt.y - currentDrag.startSvgPt.y;
+                }
 
                 let minDx = -Infinity;
                 let maxDx = Infinity;
@@ -315,6 +560,12 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                     ...prev,
                     currentOffset: [clampedDx, clampedDy],
                 } : null));
+
+                if (onAutoFollow && currentDrag.initialOuterBox) {
+                    const initCenterX = (currentDrag.initialOuterBox.xtl + currentDrag.initialOuterBox.xbr) / 2;
+                    const initCenterY = (currentDrag.initialOuterBox.ytl + currentDrag.initialOuterBox.ybr) / 2;
+                    onAutoFollow(initCenterX + clampedDx, initCenterY + clampedDy);
+                }
             }
         };
 
@@ -368,7 +619,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
             window.removeEventListener('mousemove', onMouseMove);
             window.removeEventListener('mouseup', onMouseUp);
         };
-    }, [Boolean(dragState || dragShapeState || dragSkeletonState), width, height, onEditLandmark, onEditShape, onEditSkeleton, onSelectObject]);
+    }, [Boolean(dragState || dragShapeState || dragSkeletonState), width, height, onEditLandmark, onEditShape, onEditSkeleton, onSelectObject, onAutoFollow]);
 
     return (
         <svg
@@ -422,11 +673,47 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                     const boxW = outerBox ? Math.max(0, outerBox.xbr - outerBox.xtl) : 0;
                     const boxH = outerBox ? Math.max(0, outerBox.ybr - outerBox.ytl) : 0;
 
-                    const edges = skeletonEdgesCache[state.label?.id] || [];
-                    const elementBySublabelId: Record<number, any> = {};
+                    const labelKey = String(state.label?.id ?? state.label?.name ?? state.clientID);
+                    const template = skeletonTemplatesCache[labelKey] || parseSkeletonTemplate(state.label);
+                    const edges = template.edges;
+                    const nodes = template.nodes;
+
+                    // Build mapping from nodeId, sublabelId, and sublabelName to element in state.elements
+                    const nodeToElement = new Map<string, any>();
+                    const sublabelIdToElement = new Map<number, any>();
+                    const sublabelNameToElement = new Map<string, any>();
+
                     for (const el of state.elements) {
-                        if (el.label?.id) {
-                            elementBySublabelId[el.label.id] = el;
+                        if (el.label?.id !== undefined) {
+                            sublabelIdToElement.set(Number(el.label.id), el);
+                        }
+                        if (el.label?.name) {
+                            sublabelNameToElement.set(el.label.name, el);
+                        }
+                    }
+
+                    nodes.forEach((node) => {
+                        let matchedEl = null;
+                        if (node.labelId !== undefined && sublabelIdToElement.has(node.labelId)) {
+                            matchedEl = sublabelIdToElement.get(node.labelId);
+                        } else if (node.labelName && sublabelNameToElement.has(node.labelName)) {
+                            matchedEl = sublabelNameToElement.get(node.labelName);
+                        } else if (node.elementId !== undefined && state.elements[node.elementId - 1]) {
+                            matchedEl = state.elements[node.elementId - 1];
+                        } else if (node.index < state.elements.length) {
+                            matchedEl = state.elements[node.index];
+                        }
+                        if (matchedEl) {
+                            nodeToElement.set(node.nodeId, matchedEl);
+                        }
+                    });
+
+                    // Fallback: If any element has data-node-id or clientID or by index
+                    for (let i = 0; i < state.elements.length; i++) {
+                        const el = state.elements[i];
+                        const elNodeId = el['data-node-id'] ?? el.nodeID ?? el.nodeId ?? String(i + 1);
+                        if (!nodeToElement.has(String(elNodeId))) {
+                            nodeToElement.set(String(elNodeId), el);
                         }
                     }
 
@@ -483,8 +770,13 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
 
                             {/* Render skeleton bones (edges) */}
                             {edges.map((edge, idx) => {
-                                const fromEl = elementBySublabelId[edge.from];
-                                const toEl = elementBySublabelId[edge.to];
+                                const fromEl = (edge.fromNode && nodeToElement.get(edge.fromNode)) ||
+                                    sublabelIdToElement.get(edge.from) ||
+                                    nodeToElement.get(String(edge.from));
+                                const toEl = (edge.toNode && nodeToElement.get(edge.toNode)) ||
+                                    sublabelIdToElement.get(edge.to) ||
+                                    nodeToElement.get(String(edge.to));
+
                                 if (!fromEl || !toEl || fromEl.outside || toEl.outside) {
                                     return null;
                                 }
@@ -511,6 +803,8 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                     return null;
                                 }
 
+                                const isEdgeOccluded = (isSkeletonMatched && isOccluded) || fromEl.occluded || toEl.occluded || state.occluded;
+
                                 return (
                                     <line
                                         key={`edge_${idx}`}
@@ -518,10 +812,11 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                         y1={y1}
                                         x2={x2}
                                         y2={y2}
-                                        stroke={isSkeletonMatched ? '#00f0ff' : '#ffffff'}
+                                        stroke={isSkeletonMatched ? '#00f0ff' : (state.color || '#ffffff')}
                                         strokeWidth={isSkeletonMatched ? 2 : 1.5}
                                         vectorEffect='non-scaling-stroke'
                                         strokeOpacity={isSkeletonMatched ? 0.9 : 0.65}
+                                        strokeDasharray={isEdgeOccluded ? '3,3' : undefined}
                                         style={{ pointerEvents: 'none' }}
                                     />
                                 );
@@ -721,7 +1016,19 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                 // 3. Rectangles
                 if (state.shapeType === 'rectangle' && Array.isArray(state.points) && state.points.length === 4) {
                     const isBeingDragged = dragShapeState?.shapeState?.clientID === state.clientID;
-                    const [xtl, ytl, xbr, ybr] = isBeingDragged ? dragShapeState.currentPoints : state.points;
+                    const isSkeletonDrag = !isBeingDragged && Boolean(dragSkeletonState && (
+                        state.clientID === dragSkeletonState.parentState.clientID ||
+                        state.parentID === dragSkeletonState.parentState.clientID ||
+                        (state.group?.id && dragSkeletonState.parentState.group?.id && state.group.id === dragSkeletonState.parentState.group.id)
+                    ));
+                    const [skelDx, skelDy] = isSkeletonDrag && dragSkeletonState ? dragSkeletonState.currentOffset : [0, 0];
+                    let [xtl, ytl, xbr, ybr] = isBeingDragged ? dragShapeState.currentPoints : state.points;
+                    if (isSkeletonDrag) {
+                        xtl += skelDx;
+                        ytl += skelDy;
+                        xbr += skelDx;
+                        ybr += skelDy;
+                    }
                     const isMatched = state.clientID === matchedClientID ||
                         (typeof matchedRectClientID === 'number' && state.clientID === matchedRectClientID) ||
                         (typeof matchedSkeletonClientID === 'number' && (

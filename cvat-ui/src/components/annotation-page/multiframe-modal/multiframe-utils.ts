@@ -724,6 +724,39 @@ export function zoomViewportAtPoint(
 }
 
 /**
+ * Calculates a new viewport when dragging a tile's corner resize handle.
+ * Outward/downward drag (positive delta) zooms in; inward/upward drag (negative delta) zooms out.
+ * Preserves the original image aspect ratio and bounds within image limits.
+ */
+export function calculateResizeZoomViewport(
+    startViewport: Viewport,
+    dx: number,
+    dy: number,
+    imageWidth: number,
+    imageHeight: number,
+    sensitivity = 150,
+): Viewport {
+    if (imageWidth <= 0 || imageHeight <= 0 || !startViewport || startViewport.width <= 0) {
+        return startViewport;
+    }
+
+    const delta = (dx + dy) / 2;
+    const factor = Math.exp(-delta / Math.max(10, sensitivity));
+
+    const centerX = startViewport.x + startViewport.width / 2;
+    const centerY = startViewport.y + startViewport.height / 2;
+
+    return zoomViewportAtPoint(
+        startViewport,
+        factor,
+        centerX,
+        centerY,
+        imageWidth,
+        imageHeight,
+    );
+}
+
+/**
  * Shifts (pans) a viewport by deltaX and deltaY in image coordinates, clamping to boundaries.
  */
 export function panViewport(
@@ -743,6 +776,40 @@ export function panViewport(
         imageWidth,
         imageHeight,
     );
+}
+
+/**
+ * Pans a viewport to center on an object's bounding box while strictly preserving
+ * the current zoom level (viewport width and height) and image aspect ratio.
+ * Clamps coordinates so the viewport stays within image boundaries.
+ */
+export function centerViewportOnObject(
+    viewport: Viewport,
+    bbox: BBox,
+    imageWidth: number,
+    imageHeight: number,
+): Viewport {
+    if (!viewport || viewport.width <= 0 || viewport.height <= 0 || imageWidth <= 0 || imageHeight <= 0) {
+        return viewport;
+    }
+    const objCenterX = (bbox.xtl + bbox.xbr) / 2;
+    const objCenterY = (bbox.ytl + bbox.ybr) / 2;
+
+    const vpW = Math.min(viewport.width, imageWidth);
+    const vpH = Math.min(viewport.height, imageHeight);
+
+    const targetX = objCenterX - vpW / 2;
+    const targetY = objCenterY - vpH / 2;
+
+    const clampedX = Math.max(0, Math.min(imageWidth - vpW, Math.round(targetX)));
+    const clampedY = Math.max(0, Math.min(imageHeight - vpH, Math.round(targetY)));
+
+    return {
+        x: clampedX,
+        y: clampedY,
+        width: vpW,
+        height: vpH,
+    };
 }
 
 /**
@@ -945,5 +1012,72 @@ export function mapPointerToImageCoordinates(
         x: Math.max(0, Math.min(imageWidth, imageX)),
         y: Math.max(0, Math.min(imageHeight, imageY)),
         isInsideContent,
+    };
+}
+
+/**
+ * State representation of the Multi-Frame view including full-screen frame zoom.
+ */
+export interface MultiframeViewState {
+    rangeStart: number;
+    rangeEnd: number;
+    batchIndex: number;
+    selectedObjectKey: string | null;
+    selectedTypeFilter: string;
+    autoZoomEnabled: boolean;
+    zoomedFrame: number | null;
+}
+
+/**
+ * Enters full-screen frame zoom for a given target frame.
+ * Preserves the existing grid configuration, range, batch, and object selection.
+ */
+export function openFullscreenFrameZoom(
+    currentState: MultiframeViewState,
+    targetFrame: number,
+): MultiframeViewState {
+    return {
+        ...currentState,
+        zoomedFrame: targetFrame,
+    };
+}
+
+/**
+ * Exits full-screen frame zoom and returns to the Multi-Frame grid.
+ * Restores the previous grid, frame range, selected object, and updates the batch index
+ * if navigation occurred while in full-screen zoom.
+ */
+export function returnToMultiframeGrid(
+    currentState: MultiframeViewState,
+    activeFrame?: number,
+    batchSize: number = 16,
+): MultiframeViewState {
+    let nextBatchIndex = currentState.batchIndex;
+    if (typeof activeFrame === 'number') {
+        const computedBatch = Math.floor((activeFrame - currentState.rangeStart) / batchSize);
+        if (computedBatch >= 0) {
+            nextBatchIndex = computedBatch;
+        }
+    }
+    return {
+        ...currentState,
+        batchIndex: nextBatchIndex,
+        zoomedFrame: null,
+    };
+}
+
+/**
+ * Navigates to a previous or next frame during full-screen zoom mode.
+ */
+export function navigateFullscreenFrame(
+    currentState: MultiframeViewState,
+    nextFrame: number,
+    batchSize: number = 16,
+): MultiframeViewState {
+    const computedBatch = Math.floor((nextFrame - currentState.rangeStart) / batchSize);
+    return {
+        ...currentState,
+        zoomedFrame: nextFrame,
+        batchIndex: computedBatch >= 0 ? computedBatch : currentState.batchIndex,
     };
 }
