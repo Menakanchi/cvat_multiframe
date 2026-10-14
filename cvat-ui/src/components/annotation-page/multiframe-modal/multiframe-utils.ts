@@ -130,7 +130,7 @@ export function getDefaultFrameRange(
 export function getTotalBatches(
     rangeStart: number,
     rangeEnd: number,
-    batchSize = 16,
+    batchSize = 10,
     validFrameNumbers?: number[],
 ): number {
     if (batchSize <= 0) return 0;
@@ -151,7 +151,7 @@ export function getBatchFrames(
     batchIndex: number,
     rangeStart: number,
     rangeEnd: number,
-    batchSize = 16,
+    batchSize = 10,
     validFrameNumbers?: number[],
 ): number[] {
     if (batchIndex < 0 || batchSize <= 0) return [];
@@ -1050,7 +1050,7 @@ export function openFullscreenFrameZoom(
 export function returnToMultiframeGrid(
     currentState: MultiframeViewState,
     activeFrame?: number,
-    batchSize: number = 16,
+    batchSize: number = 10,
 ): MultiframeViewState {
     let nextBatchIndex = currentState.batchIndex;
     if (typeof activeFrame === 'number') {
@@ -1072,7 +1072,7 @@ export function returnToMultiframeGrid(
 export function navigateFullscreenFrame(
     currentState: MultiframeViewState,
     nextFrame: number,
-    batchSize: number = 16,
+    batchSize: number = 10,
 ): MultiframeViewState {
     const computedBatch = Math.floor((nextFrame - currentState.rangeStart) / batchSize);
     return {

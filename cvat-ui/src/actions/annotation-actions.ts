@@ -720,6 +720,7 @@ export function activateMultiframeWorkspace(
     active: boolean,
     startFrame: number | null = null,
     endFrame: number | null = null,
+    frameCount: number | null = null,
 ): AnyAction {
     return {
         type: AnnotationActionTypes.ACTIVATE_MULTIFRAME_WORKSPACE,
@@ -727,6 +728,7 @@ export function activateMultiframeWorkspace(
             active,
             startFrame,
             endFrame,
+            frameCount,
         },
     };
 }

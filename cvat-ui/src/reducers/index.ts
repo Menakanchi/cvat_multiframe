@@ -1013,6 +1013,7 @@ export interface AnnotationState {
         active: boolean;
         startFrame: number | null;
         endFrame: number | null;
+        frameCount: number | null;
     };
     propagate: {
         visible: boolean;

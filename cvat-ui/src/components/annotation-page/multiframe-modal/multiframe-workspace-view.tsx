@@ -28,16 +28,17 @@ import {
 } from './multiframe-utils';
 import MultiframeTile from './multiframe-tile';
 
-const BATCH_SIZE = 16;
+const DEFAULT_BATCH_SIZE = 10;
 
 interface Props {
     onClose(): void;
     initialStartFrame?: number;
     initialEndFrame?: number;
+    initialFrameCount?: number;
 }
 
 function MultiframeWorkspaceView(props: Props): JSX.Element {
-    const { onClose, initialStartFrame, initialEndFrame } = props;
+    const { onClose, initialStartFrame, initialEndFrame, initialFrameCount } = props;
     const dispatch = useDispatch();
 
     const {
@@ -66,6 +67,9 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
 
     const [rangeStart, setRangeStart] = useState<number>(initialStartFrame ?? jobStartFrame);
     const [rangeEnd, setRangeEnd] = useState<number>(initialEndFrame ?? jobStopFrame);
+    const [batchSize, setBatchSize] = useState<number>(
+        typeof initialFrameCount === 'number' ? clamp(initialFrameCount, 1, 10) : DEFAULT_BATCH_SIZE,
+    );
     const [batchIndex, setBatchIndex] = useState<number>(0);
 
     const [inputStart, setInputStart] = useState<number | null>(initialStartFrame ?? jobStartFrame);
@@ -76,6 +80,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>('all');
     const [autoZoomEnabled, setAutoZoomEnabled] = useState<boolean>(true);
     const [autoFollowEnabled, setAutoFollowEnabled] = useState<boolean>(true);
+    const [focusModeEnabled, setFocusModeEnabled] = useState<boolean>(true);
     const [allJobStates, setAllJobStates] = useState<any[]>([]);
     const [initialFetchDone, setInitialFetchDone] = useState<boolean>(false);
     const [zoomedFrame, setZoomedFrame] = useState<number | null>(null);
@@ -202,17 +207,20 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
             setRangeEnd(jobStopFrame);
             setInputEnd(jobStopFrame);
         }
+        if (typeof initialFrameCount === 'number') {
+            setBatchSize(clamp(initialFrameCount, 1, 10));
+        }
         setBatchIndex(0);
-    }, [initialStartFrame, initialEndFrame, hasValidFrames, jobStartFrame, jobStopFrame]);
+    }, [initialStartFrame, initialEndFrame, initialFrameCount, hasValidFrames, jobStartFrame, jobStopFrame]);
 
-    // Reset batch index to 0 whenever the selected range changes
+    // Reset batch index to 0 whenever the selected range or batch size changes
     useEffect(() => {
         setBatchIndex(0);
-    }, [rangeStart, rangeEnd]);
+    }, [rangeStart, rangeEnd, batchSize]);
 
     const validation = validateFrameRange(inputStart, inputEnd, jobStartFrame, jobStopFrame, frameNumbers);
-    const totalBatches = getTotalBatches(rangeStart, rangeEnd, BATCH_SIZE, frameNumbers);
-    const batchFrames = getBatchFrames(batchIndex, rangeStart, rangeEnd, BATCH_SIZE, frameNumbers);
+    const totalBatches = getTotalBatches(rangeStart, rangeEnd, batchSize, frameNumbers);
+    const batchFrames = getBatchFrames(batchIndex, rangeStart, rangeEnd, batchSize, frameNumbers);
 
     const onUpdateRange = useCallback(() => {
         if (validation.isValid && hasValidFrames && inputStart !== null && inputEnd !== null) {
@@ -253,12 +261,12 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     useEffect(() => {
         if (zoomedFrame !== null && currentFrame !== zoomedFrame) {
             setZoomedFrame(currentFrame);
-            const computedBatch = Math.floor((currentFrame - rangeStart) / BATCH_SIZE);
+            const computedBatch = Math.floor((currentFrame - rangeStart) / batchSize);
             if (computedBatch >= 0 && computedBatch < totalBatches && computedBatch !== batchIndex) {
                 setBatchIndex(computedBatch);
             }
         }
-    }, [currentFrame, zoomedFrame, rangeStart, totalBatches, batchIndex]);
+    }, [currentFrame, zoomedFrame, rangeStart, totalBatches, batchIndex, batchSize]);
 
     // Escape key returns to Multi-Frame grid
     useEffect(() => {
@@ -415,6 +423,22 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     >
                         Apply Range
                     </Button>
+                    <Text strong style={{ marginLeft: 6 }}>Count:</Text>
+                    <InputNumber
+                        size='small'
+                        style={{ width: 60 }}
+                        value={batchSize}
+                        min={1}
+                        max={10}
+                        precision={0}
+                        onChange={(val: number | null) => {
+                            if (typeof val === 'number') {
+                                setBatchSize(clamp(val, 1, 10));
+                            }
+                        }}
+                        placeholder='Count'
+                        className='cvat-multiframe-count-quick-input'
+                    />
                 </div>
 
                 {/* Center: Batch Navigation */}
@@ -504,6 +528,13 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     >
                         Auto-Follow
                     </Checkbox>
+                    <Checkbox
+                        checked={focusModeEnabled}
+                        onChange={(e) => setFocusModeEnabled(e.target.checked)}
+                        className='cvat-multiframe-focus-mode-checkbox'
+                    >
+                        Focus Mode
+                    </Checkbox>
                 </div>
 
                 {/* Right: Save and Exit buttons */}
@@ -558,7 +589,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                 </div>
             ) : (
                 <div
-                    className='cvat-multiframe-grid'
+                    className={`cvat-multiframe-grid ${focusModeEnabled ? 'cvat-multiframe-grid-focus-mode' : ''}`}
                     style={{
                         gridTemplateColumns: batchFrames.length < 4 ? `repeat(${Math.max(1, batchFrames.length)}, 1fr)` : undefined,
                     }}

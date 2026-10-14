@@ -21,7 +21,7 @@ import {
 } from './multiframe-utils';
 
 interface Props {
-    onConfirm?(startFrame: number, endFrame: number): void;
+    onConfirm?(startFrame: number, endFrame: number, frameCount?: number): void;
 }
 
 function MultiframeConfigModal(props: Props): JSX.Element {
@@ -48,6 +48,7 @@ function MultiframeConfigModal(props: Props): JSX.Element {
 
     const [startFrame, setStartFrame] = useState<number>(jobStartFrame);
     const [endFrame, setEndFrame] = useState<number>(jobStopFrame);
+    const [frameCount, setFrameCount] = useState<number>(10);
 
     useEffect(() => {
         if (visible && hasValidFrames) {
@@ -59,6 +60,7 @@ function MultiframeConfigModal(props: Props): JSX.Element {
             );
             setStartFrame(defStart);
             setEndFrame(defEnd);
+            setFrameCount(10);
         }
     }, [visible, currentFrame, jobStartFrame, jobStopFrame, frameNumbers, hasValidFrames]);
 
@@ -71,12 +73,12 @@ function MultiframeConfigModal(props: Props): JSX.Element {
     const onOk = useCallback(() => {
         if (validation.isValid && hasValidFrames) {
             dispatch(switchShowMultiframeModal(false));
-            dispatch(activateMultiframeWorkspace(true, startFrame, endFrame));
+            dispatch(activateMultiframeWorkspace(true, startFrame, endFrame, frameCount));
             if (onConfirm) {
-                onConfirm(startFrame, endFrame);
+                onConfirm(startFrame, endFrame, frameCount);
             }
         }
-    }, [dispatch, validation.isValid, hasValidFrames, startFrame, endFrame, onConfirm]);
+    }, [dispatch, validation.isValid, hasValidFrames, startFrame, endFrame, frameCount, onConfirm]);
 
     return (
         <Modal
@@ -162,6 +164,44 @@ function MultiframeConfigModal(props: Props): JSX.Element {
                                     onChange={([val1, val2]: number[]) => {
                                         setStartFrame(val1);
                                         setEndFrame(val2);
+                                    }}
+                                />
+                            </Col>
+                        </Row>
+
+                        <hr className='cvat-multiframe-config-divider' />
+
+                        <Row className='cvat-multiframe-count-wrapper' style={{ marginBottom: 8 }}>
+                            <Col span={24}>
+                                <Text>
+                                    How many frames do you want to display simultaneously (1–10)?
+                                </Text>
+                            </Col>
+                        </Row>
+
+                        <Row gutter={16} align='middle' style={{ marginBottom: 16 }}>
+                            <Col span={16} className='cvat-multiframe-count-slider-wrapper'>
+                                <Slider
+                                    min={1}
+                                    max={10}
+                                    value={frameCount}
+                                    onChange={(val: number) => {
+                                        setFrameCount(clamp(val, 1, 10));
+                                    }}
+                                />
+                            </Col>
+                            <Col span={6} offset={2}>
+                                <InputNumber
+                                    size='small'
+                                    className='cvat-multiframe-count-input'
+                                    min={1}
+                                    max={10}
+                                    value={frameCount}
+                                    precision={0}
+                                    onChange={(val: number | null) => {
+                                        if (typeof val === 'number') {
+                                            setFrameCount(clamp(val, 1, 10));
+                                        }
                                     }}
                                 />
                             </Col>

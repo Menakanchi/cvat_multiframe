@@ -185,6 +185,7 @@ const defaultState: AnnotationState = {
         active: false,
         startFrame: null,
         endFrame: null,
+        frameCount: null,
     },
     propagate: {
         visible: false,
@@ -531,7 +532,7 @@ export default (state = defaultState, action: AnyAction): AnnotationState => {
             };
         }
         case AnnotationActionTypes.ACTIVATE_MULTIFRAME_WORKSPACE: {
-            const { active, startFrame, endFrame } = action.payload;
+            const { active, startFrame, endFrame, frameCount } = action.payload;
 
             return {
                 ...state,
@@ -540,6 +541,7 @@ export default (state = defaultState, action: AnyAction): AnnotationState => {
                     active,
                     startFrame: active ? startFrame : null,
                     endFrame: active ? endFrame : null,
+                    frameCount: active ? (frameCount ?? 10) : null,
                 },
             };
         }

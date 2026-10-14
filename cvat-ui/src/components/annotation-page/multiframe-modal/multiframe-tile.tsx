@@ -768,9 +768,11 @@ function MultiframeTile(props: Props): JSX.Element {
         }
     }, [dispatch, frameNumber, isActiveFrame, onNavigateToFrame, onSelectObject]);
 
+    const isTileZoomed = manualViewport !== null || (autoZoomEnabled && dimensions.width > 0 && targetViewport.width < dimensions.width);
+
     return (
         <div
-            className={`cvat-multiframe-tile ${isActiveFrame ? 'cvat-multiframe-tile-active' : ''}`}
+            className={`cvat-multiframe-tile ${isActiveFrame ? 'cvat-multiframe-tile-active' : ''} ${isTileZoomed ? 'cvat-multiframe-tile-zoomed' : ''} ${isResizing ? 'cvat-multiframe-tile-resizing' : ''}`}
             onClick={() => {
                 if (!isActiveFrame) {
                     onNavigateToFrame(frameNumber);

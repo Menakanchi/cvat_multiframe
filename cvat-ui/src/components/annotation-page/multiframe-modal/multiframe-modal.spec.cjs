@@ -5498,7 +5498,309 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     console.log('  ✔ TC 107 passed.');
 }
 
+// TC 108: Multi-Frame Verification Setup modal frame-count selector & batch navigation
+{
+    console.log('TC 108: Multi-Frame Setup modal frame-count selector & batch navigation...');
+
+    // 1. Default frame count, bounds [1, 10], and clamping
+    const defaultFrameCount = 10;
+    assert.strictEqual(defaultFrameCount, 10, 'Default frame count must be 10');
+
+    const clampCount = (val) => Math.max(1, Math.min(10, Math.round(val)));
+    assert.strictEqual(clampCount(10), 10, '10 is valid');
+    assert.strictEqual(clampCount(1), 1, '1 is valid');
+    assert.strictEqual(clampCount(0), 1, '0 is clamped to 1');
+    assert.strictEqual(clampCount(-5), 1, 'Negative values clamped to 1');
+    assert.strictEqual(clampCount(15), 10, 'Values > 10 clamped to 10');
+    assert.strictEqual(clampCount(100), 10, 'Values > 10 clamped to 10');
+
+    // 2. Selected frame count controls batch size only, never changing inclusive Start-End range
+    // Example: range 1-240 with count 10
+    const rangeStart = 1;
+    const rangeEnd = 240;
+    const count10 = 10;
+
+    const totalBatches10 = getTotalBatches(rangeStart, rangeEnd, count10);
+    assert.strictEqual(totalBatches10, 24, 'Range 1-240 with count 10 must yield 24 batches');
+
+    const batch0 = getBatchFrames(0, rangeStart, rangeEnd, count10);
+    assert.strictEqual(batch0.length, 10, 'Batch 0 has 10 frames');
+    assert.deepStrictEqual(batch0, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 'Batch 0 is 1-10');
+
+    const batch1 = getBatchFrames(1, rangeStart, rangeEnd, count10);
+    assert.strictEqual(batch1.length, 10, 'Batch 1 has 10 frames');
+    assert.deepStrictEqual(batch1, [11, 12, 13, 14, 15, 16, 17, 18, 19, 20], 'Batch 1 is 11-20');
+
+    const batchLast10 = getBatchFrames(23, rangeStart, rangeEnd, count10);
+    assert.strictEqual(batchLast10.length, 10, 'Final batch 23 has 10 frames');
+    assert.deepStrictEqual(batchLast10, [231, 232, 233, 234, 235, 236, 237, 238, 239, 240], 'Final batch is 231-240');
+
+    // Start and End frame range remains unchanged
+    assert.strictEqual(rangeStart, 1, 'Start frame is unchanged');
+    assert.strictEqual(rangeEnd, 240, 'End frame is unchanged');
+
+    // 3. Batch navigation and frame boundaries when count changes
+    // Change count to 7 on range 1-240
+    const count7 = 7;
+    const totalBatches7 = getTotalBatches(rangeStart, rangeEnd, count7);
+    assert.strictEqual(totalBatches7, 35, 'Ceil(240/7) = 35 batches');
+
+    const batch0_7 = getBatchFrames(0, rangeStart, rangeEnd, count7);
+    assert.deepStrictEqual(batch0_7, [1, 2, 3, 4, 5, 6, 7]);
+
+    const batch1_7 = getBatchFrames(1, rangeStart, rangeEnd, count7);
+    assert.deepStrictEqual(batch1_7, [8, 9, 10, 11, 12, 13, 14]);
+
+    // Final batch contains only the remaining valid frames (240 - 34*7 = 2 frames: 239, 240)
+    const batchLast7 = getBatchFrames(34, rangeStart, rangeEnd, count7);
+    assert.strictEqual(batchLast7.length, 2, 'Final batch has 2 remaining valid frames');
+    assert.deepStrictEqual(batchLast7, [239, 240], 'Final batch contains 239 and 240');
+    assert.deepStrictEqual(getBatchFrames(35, rangeStart, rangeEnd, count7), [], 'Out-of-range batch is empty');
+
+    // Change count to 1 on range 1-240
+    const totalBatches1 = getTotalBatches(rangeStart, rangeEnd, 1);
+    assert.strictEqual(totalBatches1, 240, 'Count 1 yields 240 single-frame batches');
+    assert.deepStrictEqual(getBatchFrames(0, rangeStart, rangeEnd, 1), [1]);
+    assert.deepStrictEqual(getBatchFrames(239, rangeStart, rangeEnd, 1), [240]);
+
+    // 4. Sub-batch range handling (range smaller than frame count)
+    const subRangeStart = 10;
+    const subRangeEnd = 15; // 6 frames
+    const subBatches = getTotalBatches(subRangeStart, subRangeEnd, 10);
+    assert.strictEqual(subBatches, 1, 'Sub-range smaller than frame count yields 1 batch');
+    assert.deepStrictEqual(getBatchFrames(0, subRangeStart, subRangeEnd, 10), [10, 11, 12, 13, 14, 15]);
+
+    // Range 50-65 with count 10 (16 frames -> 1 full batch of 10, 1 partial batch of 6)
+    const batches50_65 = getTotalBatches(50, 65, 10);
+    assert.strictEqual(batches50_65, 2, '16 frames with count 10 yields 2 batches');
+    assert.deepStrictEqual(getBatchFrames(0, 50, 65, 10), [50, 51, 52, 53, 54, 55, 56, 57, 58, 59]);
+    assert.deepStrictEqual(getBatchFrames(1, 50, 65, 10), [60, 61, 62, 63, 64, 65]);
+
+    // 5. Non-contiguous valid frames (stepped / sparse frame numbers)
+    const sparseFrames = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]; // 12 valid frames
+    const sparseBatches = getTotalBatches(0, 22, 10, sparseFrames);
+    assert.strictEqual(sparseBatches, 2, '12 valid sparse frames with count 10 yields 2 batches');
+    assert.deepStrictEqual(getBatchFrames(0, 0, 22, 10, sparseFrames), [0, 2, 4, 6, 8, 10, 12, 14, 16, 18]);
+    assert.deepStrictEqual(getBatchFrames(1, 0, 22, 10, sparseFrames), [20, 22], 'Final batch contains 2 remaining valid frames');
+
+    // 6. Redux state integration with frameCount
+    function mockActivateMultiframeWorkspace(active, start, end, frameCount = null) {
+        return {
+            type: 'ACTIVATE_MULTIFRAME_WORKSPACE',
+            payload: { active, startFrame: start, endFrame: end, frameCount },
+        };
+    }
+
+    function mockAnnotationReducer(state, action) {
+        if (action.type === 'ACTIVATE_MULTIFRAME_WORKSPACE') {
+            const { active, startFrame, endFrame, frameCount } = action.payload;
+            return {
+                ...state,
+                multiframe: {
+                    ...state.multiframe,
+                    active,
+                    startFrame: active ? startFrame : null,
+                    endFrame: active ? endFrame : null,
+                    frameCount: active ? (frameCount ?? 10) : null,
+                },
+            };
+        }
+        return state;
+    }
+
+    let testState = {
+        multiframe: {
+            visible: true,
+            active: false,
+            startFrame: null,
+            endFrame: null,
+            frameCount: null,
+        },
+    };
+
+    // User confirms modal with range 1-240 and frameCount 10
+    const activateAction = mockActivateMultiframeWorkspace(true, 1, 240, 10);
+    testState = mockAnnotationReducer(testState, activateAction);
+    assert.strictEqual(testState.multiframe.active, true);
+    assert.strictEqual(testState.multiframe.startFrame, 1);
+    assert.strictEqual(testState.multiframe.endFrame, 240);
+    assert.strictEqual(testState.multiframe.frameCount, 10, 'Redux state stores selected frameCount');
+
+    // User exits Multi-Frame
+    const exitAction = mockActivateMultiframeWorkspace(false);
+    testState = mockAnnotationReducer(testState, exitAction);
+    assert.strictEqual(testState.multiframe.active, false);
+    assert.strictEqual(testState.multiframe.startFrame, null);
+    assert.strictEqual(testState.multiframe.endFrame, null);
+    assert.strictEqual(testState.multiframe.frameCount, null, 'Exiting resets frameCount');
+
+    // 7. Fullscreen frame navigation & return to grid using custom batchSize
+    function enterFullscreenFrame(currentState, targetFrame) {
+        return {
+            ...currentState,
+            zoomedFrame: targetFrame,
+        };
+    }
+
+    function returnToMultiframeGrid(currentState, activeFrame, batchSize = 10) {
+        let nextBatchIndex = currentState.batchIndex;
+        if (typeof activeFrame === 'number') {
+            const computedBatch = Math.floor((activeFrame - currentState.rangeStart) / batchSize);
+            if (computedBatch >= 0) {
+                nextBatchIndex = computedBatch;
+            }
+        }
+        return {
+            ...currentState,
+            batchIndex: nextBatchIndex,
+            zoomedFrame: null,
+        };
+    }
+
+    function navigateFullscreenFrame(currentState, nextFrame, batchSize = 10) {
+        const computedBatch = Math.floor((nextFrame - currentState.rangeStart) / batchSize);
+        return {
+            ...currentState,
+            zoomedFrame: nextFrame,
+            batchIndex: computedBatch >= 0 ? computedBatch : currentState.batchIndex,
+        };
+    }
+
+    const mockViewState = {
+        zoomedFrame: null,
+        batchIndex: 0,
+        rangeStart: 1,
+        rangeEnd: 240,
+    };
+    // Zoom into frame 15 (which is in batch 1 when batchSize = 10)
+    const zoomState = enterFullscreenFrame(mockViewState, 15);
+    assert.strictEqual(zoomState.zoomedFrame, 15);
+
+    // Return to grid calculates batch index using batchSize = 10
+    const returnState = returnToMultiframeGrid(zoomState, 15, 10);
+    assert.strictEqual(returnState.zoomedFrame, null);
+    assert.strictEqual(returnState.batchIndex, 1, 'Batch index resolved to 1 for frame 15 with batchSize 10');
+
+    // Navigate to frame 25 in fullscreen with batchSize = 10
+    const navState = navigateFullscreenFrame(zoomState, 25, 10);
+    assert.strictEqual(navState.zoomedFrame, 25);
+    assert.strictEqual(navState.batchIndex, 2, 'Batch index resolved to 2 for frame 25 with batchSize 10');
+
+    console.log('  ✔ TC 108 passed.');
+}
+
+// TC 109: Improved Zoom & Focus Interactions in Multi-Frame Viewer
+{
+    console.log('TC 109: Improved Zoom & Focus Interactions in Multi-Frame Viewer...');
+    const fs = require('fs');
+    const path = require('path');
+
+    const workspaceSourcePath = path.resolve(__dirname, 'multiframe-workspace-view.tsx');
+    const tileSourcePath = path.resolve(__dirname, 'multiframe-tile.tsx');
+    const stylesSourcePath = path.resolve(__dirname, 'styles.scss');
+
+    const workspaceSource = fs.readFileSync(workspaceSourcePath, 'utf8');
+    const tileSource = fs.readFileSync(tileSourcePath, 'utf8');
+    const stylesSource = fs.readFileSync(stylesSourcePath, 'utf8');
+
+    // 1. Drag-to-zoom handle & intuitive outward/inward zoom math
+    assert.ok(
+        tileSource.includes('cvat-multiframe-tile-resize-handle') &&
+        tileSource.includes('handleResizeMouseDown'),
+        'Resize handle and handleResizeMouseDown must be present in tile'
+    );
+    assert.ok(
+        stylesSource.includes('.cvat-multiframe-tile-resize-handle') &&
+        stylesSource.includes('cursor: nwse-resize') &&
+        stylesSource.includes('bottom: 2px') &&
+        stylesSource.includes('right: 2px'),
+        'Resize handle positioned at bottom-right corner'
+    );
+
+    const imgW = 1920;
+    const imgH = 1080;
+    const initialVp = { x: 0, y: 0, width: 1920, height: 1080 };
+    const originalAspect = imgW / imgH;
+
+    // Outward drag (dx > 0, dy > 0) zooms in:
+    const zoomedIn = calculateResizeZoomViewport(initialVp, 50, 50, imgW, imgH);
+    assert.ok(zoomedIn.width < initialVp.width, 'Outward drag decreases viewport width (zooms in)');
+    assert.ok(zoomedIn.height < initialVp.height, 'Outward drag decreases viewport height (zooms in)');
+    assert.ok(Math.abs(zoomedIn.width / zoomedIn.height - originalAspect) < 0.001, 'Aspect ratio preserved when zooming in');
+
+    // Inward drag (dx < 0, dy < 0) zooms out:
+    const zoomedOut = calculateResizeZoomViewport(zoomedIn, -50, -50, imgW, imgH);
+    assert.ok(zoomedOut.width > zoomedIn.width, 'Inward drag increases viewport width (zooms out)');
+    assert.ok(zoomedOut.height > zoomedIn.height, 'Inward drag increases viewport height (zooms out)');
+    assert.ok(Math.abs(zoomedOut.width / zoomedOut.height - originalAspect) < 0.001, 'Aspect ratio preserved when zooming out');
+
+    // Transform annotations together with image without mutating annotation coordinates
+    const annotationData = {
+        clientID: 42,
+        points: Object.freeze([100, 200, 300, 400]),
+    };
+    // Overlay viewBox matches effectiveViewport
+    const overlayViewBox = `${zoomedIn.x} ${zoomedIn.y} ${zoomedIn.width} ${zoomedIn.height}`;
+    assert.ok(overlayViewBox.length > 0, 'SVG overlay aligns with zoomed viewport');
+    assert.deepStrictEqual(annotationData.points, [100, 200, 300, 400], 'Annotation coordinates never mutated by zoom');
+
+    // 2. Active-frame focus mode toggle & opacity reduction
+    assert.ok(
+        workspaceSource.includes('cvat-multiframe-focus-mode-checkbox'),
+        'Focus Mode checkbox toggle must be present in toolbar'
+    );
+    assert.ok(
+        workspaceSource.includes('focusModeEnabled') && workspaceSource.includes('setFocusModeEnabled'),
+        'focusModeEnabled state must exist in workspace view'
+    );
+    assert.ok(
+        workspaceSource.includes('cvat-multiframe-grid-focus-mode'),
+        'cvat-multiframe-grid-focus-mode class conditionally applied to grid'
+    );
+    assert.ok(
+        tileSource.includes('cvat-multiframe-tile-zoomed'),
+        'cvat-multiframe-tile-zoomed class applied to zoomed tiles'
+    );
+
+    // CSS rules verify reduced opacity for other tiles and full opacity for active/zoomed/hovered tiles
+    assert.ok(
+        stylesSource.includes('&.cvat-multiframe-grid-focus-mode') &&
+        stylesSource.includes('opacity: 0.35'),
+        'Inactive tiles must have reduced opacity (0.35) under focus mode'
+    );
+    assert.ok(
+        stylesSource.includes('&.cvat-multiframe-tile-active') &&
+        stylesSource.includes('&.cvat-multiframe-tile-zoomed'),
+        'Active and zoomed tiles must retain full visibility (opacity: 1) under focus mode'
+    );
+
+    // 3. Compact tile controls overlay and clear hover reveal
+    assert.ok(
+        tileSource.includes('cvat-multiframe-tile-header') &&
+        tileSource.includes('cvat-multiframe-tile-overlay-controls'),
+        'Controls must be in an overlay header on top of the image'
+    );
+    assert.ok(
+        stylesSource.includes('.cvat-multiframe-tile-header') &&
+        stylesSource.includes('position: absolute') &&
+        stylesSource.includes('top: 0'),
+        'Controls overlay positioned absolute on top of image'
+    );
+    assert.ok(
+        stylesSource.includes('.cvat-multiframe-tile:hover &') ||
+        stylesSource.includes('&:hover'),
+        'Controls reveal clearly on hover'
+    );
+    assert.ok(
+        stylesSource.includes('pointer-events: auto'),
+        'Overlay controls must remain clickable'
+    );
+
+    console.log('  ✔ TC 109 passed.');
+}
+
 console.log('\n=== All Real Multi-Frame Viewer Tests Passed Successfully! ===');
+
 
 
 

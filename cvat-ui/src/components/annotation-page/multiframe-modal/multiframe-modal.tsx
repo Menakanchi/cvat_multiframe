@@ -8,7 +8,7 @@ import React from 'react';
 import MultiframeConfigModal from './multiframe-config-modal';
 
 interface Props {
-    onConfirm?(startFrame: number, endFrame: number): void;
+    onConfirm?(startFrame: number, endFrame: number, frameCount?: number): void;
 }
 
 function MultiframeModal(props: Props): JSX.Element {

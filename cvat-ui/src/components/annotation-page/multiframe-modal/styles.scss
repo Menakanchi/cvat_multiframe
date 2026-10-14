@@ -15,6 +15,22 @@
 
 .cvat-multiframe-config-content {
     padding: 4px 0;
+
+    .cvat-multiframe-config-divider {
+        border: 0;
+        border-top: 1px solid #3a3a3a;
+        margin: 16px 0;
+    }
+
+    .cvat-multiframe-count-slider-wrapper {
+        .ant-slider {
+            margin: 6px 6px 10px;
+        }
+    }
+
+    .cvat-multiframe-count-input {
+        width: 100%;
+    }
 }
 
 .cvat-multiframe-workspace-view {
@@ -62,7 +78,8 @@
     gap: 8px;
 
     .cvat-multiframe-autozoom-checkbox,
-    .cvat-multiframe-autofollow-checkbox {
+    .cvat-multiframe-autofollow-checkbox,
+    .cvat-multiframe-focus-mode-checkbox {
         color: #e0e0e0;
         margin-left: 4px;
     }
@@ -86,6 +103,19 @@
     overflow-y: auto;
     padding: 2px;
     min-height: 0;
+
+    &.cvat-multiframe-grid-focus-mode {
+        .cvat-multiframe-tile {
+            opacity: 0.35;
+            transition: opacity 0.25s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+
+            &:hover,
+            &.cvat-multiframe-tile-active,
+            &.cvat-multiframe-tile-zoomed {
+                opacity: 1;
+            }
+        }
+    }
 
     @media (max-width: 1200px) {
         grid-template-columns: repeat(3, 1fr);
@@ -123,8 +153,14 @@
     box-shadow: 0 0 6px rgba(82, 196, 26, 0.45);
 
     .cvat-multiframe-tile-header {
+        opacity: 0.95;
         background: rgba(24, 48, 24, 0.82);
         border-bottom-color: rgba(82, 196, 26, 0.4);
+
+        &:hover {
+            opacity: 1;
+            background: rgba(24, 48, 24, 0.92);
+        }
     }
 }
 
@@ -138,14 +174,23 @@
     justify-content: space-between;
     align-items: center;
     padding: 3px 6px;
-    background: rgba(18, 18, 18, 0.72);
-    backdrop-filter: blur(4px);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(18, 18, 18, 0.55);
+    backdrop-filter: blur(3px);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     color: #fff;
     min-height: 24px;
     font-size: 11px;
     pointer-events: auto;
-    transition: background 0.2s ease;
+    opacity: 0.65;
+    transition: opacity 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+
+    .cvat-multiframe-tile:hover &,
+    &:hover {
+        opacity: 1;
+        background: rgba(18, 18, 18, 0.88);
+        backdrop-filter: blur(6px);
+        border-bottom-color: rgba(255, 255, 255, 0.18);
+    }
 
     .cvat-multiframe-tile-header-left,
     .cvat-multiframe-tile-header-center,
