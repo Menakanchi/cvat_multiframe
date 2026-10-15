@@ -6077,6 +6077,10 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         workspaceSource.includes("'cvat-multiframe-grid-has-zoomed'"),
         'A double-clicked frame fills the workspace; other tiles are hidden (kept mounted)',
     );
+    assert.ok(
+        workspaceSource.includes('aspectRatio: `${renderSize.width} / ${renderSize.height}`'),
+        'Grid tiles keep the frame aspect ratio (no letterbox bars)',
+    );
 
     // Type / Object ID controls
     assert.ok(workspaceSource.includes('cvat-multiframe-type-select'), 'Type dropdown exists');

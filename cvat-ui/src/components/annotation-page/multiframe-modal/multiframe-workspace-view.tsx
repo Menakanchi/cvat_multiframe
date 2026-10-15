@@ -694,6 +694,17 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         } else if (isAnyZoomed) {
                             // The zoomed frame fills the workspace: other tiles stay mounted but hidden
                             tileStyle = { display: 'none' };
+                        } else {
+                            // Grid tile takes the frame aspect ratio (square frame -> square tile), no letterbox bars
+                            const renderSize = frameRenderSizes[frame];
+                            if (renderSize && renderSize.width > 0 && renderSize.height > 0) {
+                                tileStyle = {
+                                    aspectRatio: `${renderSize.width} / ${renderSize.height}`,
+                                    height: 'auto',
+                                    minHeight: 0,
+                                    alignSelf: 'start',
+                                };
+                            }
                         }
 
                         return (
