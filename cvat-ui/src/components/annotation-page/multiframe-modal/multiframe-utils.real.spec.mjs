@@ -806,4 +806,36 @@ await test('Undo/Redo batch: allowed only while the deletion steps are on top of
     assert.equal(U.canUndoDeletionBatch(h3, entries, result.historySteps), false, 'blocked after other changes');
 });
 
+await test('Multi-Frame range: at most 10 frames, centered default, bounded editing and window shift', async () => {
+    const frames = Array.from({ length: 31 }, (_, i) => i); // 0..30
+    assert.equal(U.MAX_MULTIFRAME_FRAMES, 10);
+
+    // default: 10 frames around the current frame
+    assert.deepEqual(U.getDefaultFrameRange(15, 0, 30, frames, U.MAX_MULTIFRAME_FRAMES), [10, 19]);
+    assert.deepEqual(U.getDefaultFrameRange(0, 0, 30, frames, U.MAX_MULTIFRAME_FRAMES), [0, 9]);
+    assert.deepEqual(U.getDefaultFrameRange(30, 0, 30, frames, U.MAX_MULTIFRAME_FRAMES), [21, 30]);
+
+    // more than 10 frames is invalid
+    assert.equal(U.validateMultiframeRange(0, 9, 0, 30, frames).isValid, true);
+    assert.equal(U.validateMultiframeRange(0, 15, 0, 30, frames).isValid, false);
+
+    // the edited bound is kept, the other one follows
+    assert.deepEqual(U.limitFrameRange(0, 15, 'end', frames), [6, 15]);
+    assert.deepEqual(U.limitFrameRange(0, 15, 'start', frames), [0, 9]);
+    assert.deepEqual(U.limitFrameRange(3, 8, 'start', frames), [3, 8]);
+
+    // sparse job frames: limits count job frames, not frame numbers
+    const sparse = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+    assert.deepEqual(U.limitFrameRange(0, 55, 'start', sparse), [0, 45]);
+    assert.equal(U.validateMultiframeRange(0, 45, 0, 55, sparse).isValid, true);
+
+    // Prev / Next move the window by its own size, clamped to the job
+    assert.deepEqual(U.shiftFrameWindow(10, 19, 1, frames), [20, 29]);
+    assert.deepEqual(U.shiftFrameWindow(20, 29, 1, frames), [21, 30], 'window size is kept at the job end');
+    assert.equal(U.shiftFrameWindow(21, 30, 1, frames), null);
+    assert.deepEqual(U.shiftFrameWindow(10, 19, -1, frames), [0, 9]);
+    assert.deepEqual(U.shiftFrameWindow(5, 14, -1, frames), [0, 9], 'window size is kept at the job start');
+    assert.equal(U.shiftFrameWindow(0, 9, -1, frames), null);
+});
+
 console.log(`\n=== ${passed} actual-implementation tests passed ===`);

@@ -127,6 +127,83 @@ export function getDefaultFrameRange(
     return [start, end];
 }
 
+/** The Multi-Frame workspace shows at most this many frames at once */
+export const MAX_MULTIFRAME_FRAMES = 10;
+
+/** Job frames inside the inclusive range, ascending */
+export function getFramesInRange(startFrame: number, endFrame: number, validFrameNumbers: number[]): number[] {
+    return validFrameNumbers.filter((frame) => frame >= startFrame && frame <= endFrame).sort((a, b) => a - b);
+}
+
+/**
+ * Keeps an inclusive range within maxFrames job frames: the edited bound is kept
+ * and the other bound is moved towards it.
+ */
+export function limitFrameRange(
+    startFrame: number,
+    endFrame: number,
+    changed: 'start' | 'end',
+    validFrameNumbers: number[],
+    maxFrames = MAX_MULTIFRAME_FRAMES,
+): [number, number] {
+    const frames = [...validFrameNumbers].sort((a, b) => a - b);
+    if (!frames.length || startFrame > endFrame || getFramesInRange(startFrame, endFrame, frames).length <= maxFrames) {
+        return [startFrame, endFrame];
+    }
+    if (changed === 'start') {
+        const startIdx = frames.findIndex((frame) => frame >= startFrame);
+        return [startFrame, frames[Math.min(frames.length - 1, startIdx + maxFrames - 1)]];
+    }
+    let endIdx = frames.length - 1;
+    while (endIdx > 0 && frames[endIdx] > endFrame) endIdx--;
+    return [frames[Math.max(0, endIdx - maxFrames + 1)], endFrame];
+}
+
+/** validateFrameRange plus the Multi-Frame limit of maxFrames job frames */
+export function validateMultiframeRange(
+    startFrame: number | null | undefined,
+    endFrame: number | null | undefined,
+    jobStartFrame: number,
+    jobStopFrame: number,
+    validFrameNumbers: number[],
+    maxFrames = MAX_MULTIFRAME_FRAMES,
+): FrameRangeValidation {
+    const validation = validateFrameRange(startFrame, endFrame, jobStartFrame, jobStopFrame, validFrameNumbers);
+    if (!validation.isValid) return validation;
+    const count = getFramesInRange(startFrame as number, endFrame as number, validFrameNumbers).length;
+    if (count > maxFrames) {
+        return { isValid: false, error: `At most ${maxFrames} frames can be shown (this range has ${count})` };
+    }
+    return validation;
+}
+
+/**
+ * The next (+1) or previous (-1) window with the same number of job frames
+ * (clamped to the job bounds), or null when there are no more frames in that direction.
+ */
+export function shiftFrameWindow(
+    startFrame: number,
+    endFrame: number,
+    direction: 1 | -1,
+    validFrameNumbers: number[],
+): [number, number] | null {
+    const frames = [...validFrameNumbers].sort((a, b) => a - b);
+    const current = getFramesInRange(startFrame, endFrame, frames);
+    if (!current.length) return null;
+    const size = current.length;
+    const startIdx = frames.indexOf(current[0]);
+    const endIdx = frames.indexOf(current[current.length - 1]);
+    // keep the window size: near the job bounds the window stops at the first / last frame
+    if (direction === 1) {
+        if (endIdx + 1 >= frames.length) return null;
+        const newEndIdx = Math.min(frames.length - 1, endIdx + size);
+        return [frames[Math.max(0, newEndIdx - size + 1)], frames[newEndIdx]];
+    }
+    if (startIdx - 1 < 0) return null;
+    const newStartIdx = Math.max(0, startIdx - size);
+    return [frames[newStartIdx], frames[Math.min(frames.length - 1, newStartIdx + size - 1)]];
+}
+
 export function getTotalBatches(
     rangeStart: number,
     rangeEnd: number,

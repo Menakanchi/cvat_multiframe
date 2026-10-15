@@ -30,12 +30,14 @@ import {
     saveAnnotationsAsync,
 } from 'actions/annotation-actions';
 import { shallowEqual } from 'utils/redux';
-import { clamp } from 'utils/math';
 import { ANNOTATIONS_BULK_CHANGED_EVENT } from 'components/annotation-page/annotation-deletion/annotation-deletion-panel';
 import {
-    validateFrameRange,
-    getBatchFrames,
-    getTotalBatches,
+    validateMultiframeRange,
+    getDefaultFrameRange,
+    getFramesInRange,
+    limitFrameRange,
+    shiftFrameWindow,
+    MAX_MULTIFRAME_FRAMES,
     extractSelectableObjects,
     SelectableObject,
     calculateExpandedFitDimensions,
@@ -48,8 +50,6 @@ import {
 } from './multiframe-utils';
 import MultiframeTile from './multiframe-tile';
 import { MULTIFRAME_SIDEBAR_CONTROLS_ID } from './multiframe-sidebar-tab';
-
-const DEFAULT_BATCH_SIZE = 10;
 
 const FILTER_MODE_COLORS: Record<ObjectFilterState['mode'], string> = {
     none: 'default',
@@ -72,12 +72,11 @@ interface Props {
     onClose(): void;
     initialStartFrame?: number;
     initialEndFrame?: number;
-    initialFrameCount?: number;
 }
 
 function MultiframeWorkspaceView(props: Props): JSX.Element {
     const {
-        onClose, initialStartFrame, initialEndFrame, initialFrameCount,
+        onClose, initialStartFrame, initialEndFrame,
     } = props;
     const dispatch = useDispatch();
 
@@ -109,10 +108,6 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
 
     const [rangeStart, setRangeStart] = useState<number>(initialStartFrame ?? jobStartFrame);
     const [rangeEnd, setRangeEnd] = useState<number>(initialEndFrame ?? jobStopFrame);
-    const [batchSize, setBatchSize] = useState<number>(
-        typeof initialFrameCount === 'number' ? clamp(initialFrameCount, 1, 10) : DEFAULT_BATCH_SIZE,
-    );
-    const [batchIndex, setBatchIndex] = useState<number>(0);
 
     const [inputStart, setInputStart] = useState<number | null>(initialStartFrame ?? jobStartFrame);
     const [inputEnd, setInputEnd] = useState<number | null>(initialEndFrame ?? jobStopFrame);
@@ -333,50 +328,60 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     }, [jobInstance, currentFrame]);
 
     useEffect(() => {
-        if (typeof initialStartFrame === 'number') {
-            setRangeStart(initialStartFrame);
-            setInputStart(initialStartFrame);
-        } else if (hasValidFrames) {
-            setRangeStart(jobStartFrame);
-            setInputStart(jobStartFrame);
+        let start = initialStartFrame;
+        let end = initialEndFrame;
+        if ((typeof start !== 'number' || typeof end !== 'number') && hasValidFrames) {
+            // at most MAX_MULTIFRAME_FRAMES frames around the current frame
+            [start, end] = getDefaultFrameRange(
+                currentFrame, jobStartFrame, jobStopFrame, frameNumbers, MAX_MULTIFRAME_FRAMES,
+            );
         }
-        if (typeof initialEndFrame === 'number') {
-            setRangeEnd(initialEndFrame);
-            setInputEnd(initialEndFrame);
-        } else if (hasValidFrames) {
-            setRangeEnd(jobStopFrame);
-            setInputEnd(jobStopFrame);
+        if (typeof start === 'number' && typeof end === 'number') {
+            setRangeStart(start);
+            setInputStart(start);
+            setRangeEnd(end);
+            setInputEnd(end);
         }
-        if (typeof initialFrameCount === 'number') {
-            setBatchSize(clamp(initialFrameCount, 1, 10));
-        }
-        setBatchIndex(0);
-    }, [initialStartFrame, initialEndFrame, initialFrameCount, hasValidFrames, jobStartFrame, jobStopFrame]);
+    }, [initialStartFrame, initialEndFrame, hasValidFrames, jobStartFrame, jobStopFrame]);
 
-    // Reset batch index to 0 whenever the selected range or batch size changes
-    useEffect(() => {
-        setBatchIndex(0);
-    }, [rangeStart, rangeEnd, batchSize]);
+    const validFrames: number[] = hasValidFrames ? frameNumbers : [];
+    const validation = validateMultiframeRange(inputStart, inputEnd, jobStartFrame, jobStopFrame, validFrames);
+    // At most MAX_MULTIFRAME_FRAMES frames are shown, all at once
+    const batchFrames = getFramesInRange(rangeStart, rangeEnd, validFrames).slice(0, MAX_MULTIFRAME_FRAMES);
 
-    const validation = validateFrameRange(inputStart, inputEnd, jobStartFrame, jobStopFrame, frameNumbers);
-    const totalBatches = getTotalBatches(rangeStart, rangeEnd, batchSize, frameNumbers);
-    const batchFrames = getBatchFrames(batchIndex, rangeStart, rangeEnd, batchSize, frameNumbers);
+    // Editing one bound moves the other one so that the range never exceeds MAX_MULTIFRAME_FRAMES frames
+    const onChangeInputBound = useCallback((changed: 'start' | 'end', value: number | null) => {
+        const start = changed === 'start' ? value : inputStart;
+        const end = changed === 'end' ? value : inputEnd;
+        if (typeof start === 'number' && typeof end === 'number' && hasValidFrames) {
+            const [limitedStart, limitedEnd] = limitFrameRange(start, end, changed, frameNumbers);
+            setInputStart(limitedStart);
+            setInputEnd(limitedEnd);
+        } else if (changed === 'start') {
+            setInputStart(value);
+        } else {
+            setInputEnd(value);
+        }
+    }, [inputStart, inputEnd, hasValidFrames, frameNumbers]);
 
     const onUpdateRange = useCallback(() => {
         if (validation.isValid && hasValidFrames && inputStart !== null && inputEnd !== null) {
             setRangeStart(inputStart);
             setRangeEnd(inputEnd);
-            setBatchIndex(0);
         }
     }, [validation.isValid, hasValidFrames, inputStart, inputEnd]);
 
-    const onPrevBatch = useCallback(() => {
-        setBatchIndex((idx) => Math.max(0, idx - 1));
+    // Prev / Next move the whole window by its own number of frames
+    const prevWindow = shiftFrameWindow(rangeStart, rangeEnd, -1, validFrames);
+    const nextWindow = shiftFrameWindow(rangeStart, rangeEnd, 1, validFrames);
+    const onShiftWindow = useCallback((target: [number, number] | null) => {
+        if (!target) return;
+        const [start, end] = target;
+        setRangeStart(start);
+        setRangeEnd(end);
+        setInputStart(start);
+        setInputEnd(end);
     }, []);
-
-    const onNextBatch = useCallback(() => {
-        setBatchIndex((idx) => Math.min(Math.max(0, totalBatches - 1), idx + 1));
-    }, [totalBatches]);
 
     const handleNavigateToFrame = useCallback((frame: number) => {
         dispatch(changeFrameAsync(frame));
@@ -430,14 +435,9 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         applyObjectFilter(enterIDFilter(getObjectInputKey(parentObject)));
     }, [combinedStates, applyObjectFilter]);
 
-    let batchStartFrame: number | string = hasValidFrames ? rangeStart : '-';
-    let batchEndFrame: number | string = hasValidFrames ? rangeEnd : '-';
-    if (batchFrames.length > 0) {
-        [batchStartFrame] = batchFrames;
-        batchEndFrame = batchFrames[batchFrames.length - 1];
-    }
-    const batchIndicator = `Batch ${totalBatches === 0 ? 0 : batchIndex + 1} of ${Math.max(1, totalBatches)} ` +
-        `(Frames #${batchStartFrame} - #${batchEndFrame})`;
+    const batchIndicator = batchFrames.length > 0 ?
+        `Frames #${batchFrames[0]} - #${batchFrames[batchFrames.length - 1]} ` +
+        `(${batchFrames.length} of max ${MAX_MULTIFRAME_FRAMES})` : 'No frames';
 
     // Controls are shown in the Multi-Frame tab of the right tools sidebar (React portal)
     const controls = (
@@ -453,7 +453,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         min={jobStartFrame}
                         max={jobStopFrame}
                         precision={0}
-                        onChange={(val: number | null) => setInputStart(val)}
+                        onChange={(val: number | null) => onChangeInputBound('start', val)}
                         placeholder='Start'
                     />
                     <Text>to</Text>
@@ -464,27 +464,11 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         min={jobStartFrame}
                         max={jobStopFrame}
                         precision={0}
-                        onChange={(val: number | null) => setInputEnd(val)}
+                        onChange={(val: number | null) => onChangeInputBound('end', val)}
                         placeholder='End'
                     />
                 </div>
                 <div className='cvat-multiframe-range-group'>
-                    <Text>Count</Text>
-                    <InputNumber
-                        size='small'
-                        style={{ width: 60 }}
-                        value={batchSize}
-                        min={1}
-                        max={10}
-                        precision={0}
-                        onChange={(val: number | null) => {
-                            if (typeof val === 'number') {
-                                setBatchSize(clamp(val, 1, 10));
-                            }
-                        }}
-                        placeholder='Count'
-                        className='cvat-multiframe-count-quick-input'
-                    />
                     <Button
                         size='small'
                         disabled={!validation.isValid || !hasValidFrames}
@@ -505,7 +489,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
             </div>
 
             <div className='cvat-multiframe-controls-section'>
-                <Text strong className='cvat-multiframe-controls-title'>Batch</Text>
+                <Text strong className='cvat-multiframe-controls-title'>Navigation</Text>
                 <Text className='cvat-multiframe-batch-indicator'>
                     {batchIndicator}
                 </Text>
@@ -513,20 +497,22 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     <Button
                         size='small'
                         icon={<LeftOutlined />}
-                        onClick={onPrevBatch}
-                        disabled={batchIndex === 0}
+                        onClick={() => onShiftWindow(prevWindow)}
+                        disabled={!prevWindow}
                         className='cvat-multiframe-prev-batch-btn'
+                        title='Show the previous frames'
                     >
-                        Prev Batch
+                        Prev
                     </Button>
                     <Button
                         size='small'
                         icon={<RightOutlined />}
-                        onClick={onNextBatch}
-                        disabled={totalBatches === 0 || batchIndex >= totalBatches - 1}
+                        onClick={() => onShiftWindow(nextWindow)}
+                        disabled={!nextWindow}
                         className='cvat-multiframe-next-batch-btn'
+                        title='Show the next frames'
                     >
-                        Next Batch
+                        Next
                     </Button>
                 </div>
             </div>

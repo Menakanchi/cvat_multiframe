@@ -17,8 +17,11 @@ import { activateMultiframeWorkspace } from 'actions/annotation-actions';
 import { shallowEqual } from 'utils/redux';
 import { clamp } from 'utils/math';
 import {
-    validateFrameRange,
+    validateMultiframeRange,
     getDefaultFrameRange,
+    getFramesInRange,
+    limitFrameRange,
+    MAX_MULTIFRAME_FRAMES,
 } from './multiframe-utils';
 
 /** DOM node inside the sidebar tab where the Multi-Frame workspace renders its controls (React portal) */
@@ -26,7 +29,7 @@ export const MULTIFRAME_SIDEBAR_CONTROLS_ID = 'cvat-multiframe-sidebar-controls'
 
 /**
  * Multi-Frame tab of the annotation tools sidebar.
- * Inactive: the setup form (frame range and frames per batch) that opens the Multi-Frame workspace.
+ * Inactive: the setup form (frame range, at most MAX_MULTIFRAME_FRAMES frames) that opens the workspace.
  * Active: the container that receives the workspace controls.
  */
 function MultiframeSidebarTab(): JSX.Element {
@@ -49,18 +52,28 @@ function MultiframeSidebarTab(): JSX.Element {
 
     const [startFrame, setStartFrame] = useState<number>(jobStartFrame);
     const [endFrame, setEndFrame] = useState<number>(jobStopFrame);
-    const [frameCount, setFrameCount] = useState<number>(10);
 
-    // Default range around the current frame whenever the setup form is shown again
+    // Default: MAX_MULTIFRAME_FRAMES frames around the current frame, whenever the setup form is shown again
     useEffect(() => {
         if (!multiframeActive && hasValidFrames) {
-            const [defStart, defEnd] = getDefaultFrameRange(currentFrame, jobStartFrame, jobStopFrame, frameNumbers);
+            const [defStart, defEnd] = getDefaultFrameRange(
+                currentFrame, jobStartFrame, jobStopFrame, frameNumbers, MAX_MULTIFRAME_FRAMES,
+            );
             setStartFrame(defStart);
             setEndFrame(defEnd);
         }
     }, [multiframeActive, hasValidFrames, jobStartFrame, jobStopFrame, frameNumbers]);
 
-    const validation = validateFrameRange(startFrame, endFrame, jobStartFrame, jobStopFrame, frameNumbers);
+    const validFrames: number[] = hasValidFrames ? frameNumbers : [];
+    const validation = validateMultiframeRange(startFrame, endFrame, jobStartFrame, jobStopFrame, validFrames);
+    const frameCount = getFramesInRange(startFrame, endFrame, validFrames).length;
+
+    // Editing one bound moves the other one so that the range never exceeds MAX_MULTIFRAME_FRAMES frames
+    const setRange = useCallback((start: number, end: number, changed: 'start' | 'end') => {
+        const [limitedStart, limitedEnd] = limitFrameRange(start, end, changed, validFrames);
+        setStartFrame(limitedStart);
+        setEndFrame(limitedEnd);
+    }, [validFrames]);
 
     const onOpen = useCallback(() => {
         if (validation.isValid && hasValidFrames) {
@@ -79,7 +92,7 @@ function MultiframeSidebarTab(): JSX.Element {
             ) : (
                 <>
                     <Text className='cvat-multiframe-sidebar-hint'>
-                        Inclusive frame range to show in the Multi-Frame workspace:
+                        {`Frames to show (inclusive, at most ${MAX_MULTIFRAME_FRAMES}):`}
                     </Text>
                     <div className='cvat-multiframe-sidebar-row'>
                         <Text strong>Start</Text>
@@ -90,7 +103,7 @@ function MultiframeSidebarTab(): JSX.Element {
                             value={startFrame}
                             precision={0}
                             onChange={(val: number | null) => {
-                                if (typeof val === 'number') setStartFrame(val);
+                                if (typeof val === 'number') setRange(val, endFrame, 'start');
                             }}
                             className='cvat-multiframe-setup-start-input'
                         />
@@ -102,7 +115,7 @@ function MultiframeSidebarTab(): JSX.Element {
                             value={endFrame}
                             precision={0}
                             onChange={(val: number | null) => {
-                                if (typeof val === 'number') setEndFrame(val);
+                                if (typeof val === 'number') setRange(startFrame, val, 'end');
                             }}
                             className='cvat-multiframe-setup-end-input'
                         />
@@ -116,24 +129,12 @@ function MultiframeSidebarTab(): JSX.Element {
                             clamp(endFrame, jobStartFrame, jobStopFrame),
                         ]}
                         onChange={([val1, val2]: number[]) => {
-                            setStartFrame(val1);
-                            setEndFrame(val2);
+                            setRange(val1, val2, val1 !== startFrame ? 'start' : 'end');
                         }}
                     />
-                    <div className='cvat-multiframe-sidebar-row'>
-                        <Text strong>Frames per batch (1-10)</Text>
-                        <InputNumber
-                            size='small'
-                            min={1}
-                            max={10}
-                            value={frameCount}
-                            precision={0}
-                            onChange={(val: number | null) => {
-                                if (typeof val === 'number') setFrameCount(clamp(val, 1, 10));
-                            }}
-                            className='cvat-multiframe-count-input'
-                        />
-                    </div>
+                    <Text type='secondary' className='cvat-multiframe-setup-count'>
+                        {`${frameCount} frame(s) selected`}
+                    </Text>
                 </>
             )}
 

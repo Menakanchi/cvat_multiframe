@@ -26,11 +26,10 @@ import { shallowEqual } from 'utils/redux';
 
 export default function StandardWorkspaceComponent(): JSX.Element {
     const dispatch = useDispatch();
-    const { multiframeActive, startFrame, endFrame, frameCount } = useSelector((state: CombinedState) => ({
+    const { multiframeActive, startFrame, endFrame } = useSelector((state: CombinedState) => ({
         multiframeActive: state.annotation.multiframe.active,
         startFrame: state.annotation.multiframe.startFrame,
         endFrame: state.annotation.multiframe.endFrame,
-        frameCount: state.annotation.multiframe.frameCount,
     }), shallowEqual);
 
     return (
@@ -41,7 +40,6 @@ export default function StandardWorkspaceComponent(): JSX.Element {
                     onClose={() => dispatch(activateMultiframeWorkspace(false))}
                     initialStartFrame={startFrame ?? undefined}
                     initialEndFrame={endFrame ?? undefined}
-                    initialFrameCount={frameCount ?? undefined}
                 />
             ) : (
                 <>
