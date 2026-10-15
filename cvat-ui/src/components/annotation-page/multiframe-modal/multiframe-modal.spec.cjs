@@ -6088,35 +6088,58 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     assert.ok(workspaceSource.includes('enterIDFilter(getObjectInputKey('),
         'Selecting an object fills an unambiguous ID (track_N / shape_N)');
 
-    // Deletion: dry-run preview, mandatory confirmation, native history, refresh
+    // Deletion lives in its own right-sidebar panel: dry-run preview, mandatory confirmation, native history
+    const panelSource = fs.readFileSync(
+        path.resolve(__dirname, '../annotation-deletion/annotation-deletion-panel.tsx'), 'utf8',
+    );
+    const standardWorkspaceSource = fs.readFileSync(
+        path.resolve(__dirname, '../standard-workspace/standard-workspace.tsx'), 'utf8',
+    );
     assert.ok(
-        workspaceSource.includes('planAnnotationDeletion(') && workspaceSource.includes('executeAnnotationDeletion('),
+        !workspaceSource.includes('planAnnotationDeletion') && !workspaceSource.includes('cvat-multiframe-delete-btn'),
+        'Multi-Frame workspace no longer contains the deletion feature',
+    );
+    assert.ok(
+        standardWorkspaceSource.includes('<AnnotationDeletionPanel />') &&
+        standardWorkspaceSource.indexOf('<AnnotationDeletionPanel />') <
+            standardWorkspaceSource.indexOf('<ObjectSideBarComponent'),
+        'Delete Annotations panel is mounted on the right side, next to the objects sidebar',
+    );
+    assert.ok(
+        panelSource.includes("className='cvat-annotation-deletion-sider'") &&
+        panelSource.includes('onClick={toggleCollapsed}') &&
+        panelSource.includes('useState<boolean>(true)'),
+        'Panel has a pull-out tab and starts collapsed',
+    );
+    assert.ok(
+        panelSource.includes('planAnnotationDeletion(') && panelSource.includes('executeAnnotationDeletion('),
         'Deletion uses a dry-run plan and executes the same plan',
     );
     assert.ok(
-        workspaceSource.includes("className='cvat-multiframe-delete-preview-list'"),
+        panelSource.includes("className='cvat-annotation-deletion-preview-list'"),
         'Preview lists target objects',
     );
     assert.ok(
-        workspaceSource.includes('deletionPlan.isValid && confirmDelete'),
+        panelSource.includes('deletionPlan.isValid && confirmDelete'),
         'Confirmation is mandatory for every deletion',
     );
     assert.ok(
-        workspaceSource.includes('jobInstance.actions.undo(lastDeletion.count)') &&
-        workspaceSource.includes('jobInstance.actions.redo(lastDeletion.count)'),
+        panelSource.includes('jobInstance.actions.undo(lastDeletion.count)') &&
+        panelSource.includes('jobInstance.actions.redo(lastDeletion.count)'),
         'Batch undo/redo uses native CVAT history',
     );
     assert.ok(
+        panelSource.includes('window.dispatchEvent(new Event(ANNOTATIONS_BULK_CHANGED_EVENT))') &&
+        workspaceSource.includes('window.addEventListener(ANNOTATIONS_BULK_CHANGED_EVENT, onAnnotationsChanged)') &&
         workspaceSource.includes('refreshToken={tilesRefreshToken}') &&
         tileSource.includes('[frameNumber, jobInstance, refreshToken]'),
-        'Tiles reload annotations after deletion/undo/redo',
+        'Multi-Frame tiles reload annotations after deletion/undo/redo from the panel',
     );
     assert.ok(
         !utilsSource.includes('group.id === st.group.id'),
         'Deletion never removes objects only because they share a group',
     );
     assert.ok(!/\.delete\([^)]*,\s*true\)/.test(utilsSource), 'Deletion never forces removal of locked objects');
-    assert.ok(workspaceSource.includes('open={showDeleteModal}'), 'antd 5 Modal uses the open prop');
     console.log('  ✔ TC 112 passed.');
 }
 
@@ -6160,11 +6183,14 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     assert.ok(ws.includes('cvat-multiframe-filter-active'), 'Active control is highlighted');
     assert.ok(ws.includes('typeFilterLabel={typeFilterLabel}'), 'Tiles receive the Type mode label');
 
-    // deletion modal uses the same exclusive modes
-    assert.ok(ws.includes('setDeleteFilter(selectTypeFilter(val))') &&
-        ws.includes('setDeleteFilter(enterIDFilter(e.target.value))'), 'Deletion modal switches modes');
-    assert.ok(ws.includes("resolveObjectByIDAndType(deleteIDInput, 'all', combinedStates)"),
-        'Deletion ID is resolved without the type');
+    // deletion panel uses the same exclusive modes
+    const panel = fs.readFileSync(
+        path.resolve(__dirname, '../annotation-deletion/annotation-deletion-panel.tsx'), 'utf8',
+    );
+    assert.ok(panel.includes('setFilter(selectTypeFilter(val))') &&
+        panel.includes('setFilter(enterIDFilter(e.target.value))'), 'Deletion panel switches modes');
+    assert.ok(panel.includes("resolveObjectByIDAndType(idInput, 'all', rangeStates)"),
+        'Deletion ID is resolved without the type, across the whole frame range');
 
     // tiles: read-only display of the type matches and a clear indicator for frames without matches
     assert.ok(tile.includes('getTypeFilterMatches(frameStates, typeFilterLabel)'), 'Tile computes type matches');

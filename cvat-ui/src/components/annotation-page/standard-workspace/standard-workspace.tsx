@@ -18,6 +18,7 @@ import RemoveConfirmComponent from 'components/annotation-page/standard-workspac
 import PropagateConfirmComponent from 'components/annotation-page/standard-workspace/propagate-confirm';
 import BrushTools from 'components/annotation-page/canvas/views/canvas2d/brush-tools';
 import MultiframeWorkspaceView from 'components/annotation-page/multiframe-modal/multiframe-workspace-view';
+import AnnotationDeletionPanel from 'components/annotation-page/annotation-deletion/annotation-deletion-panel';
 import { useDispatch, useSelector } from 'react-redux';
 import { CombinedState } from 'reducers';
 import { activateMultiframeWorkspace } from 'actions/annotation-actions';
@@ -48,6 +49,7 @@ export default function StandardWorkspaceComponent(): JSX.Element {
                     <BrushTools />
                 </>
             )}
+            <AnnotationDeletionPanel />
             <ObjectSideBarComponent objectsList={<ObjectsListContainer />} />
             <PropagateConfirmComponent />
             <CanvasContextMenuContainer />

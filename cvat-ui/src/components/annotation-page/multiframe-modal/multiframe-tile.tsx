@@ -276,7 +276,6 @@ function MultiframeTile(props: Props): JSX.Element {
     const renderWidth = targetViewport.width > 0 ? viewportWidth : dimensions.width;
     const renderHeight = targetViewport.height > 0 ? viewportHeight : dimensions.height;
 
-
     // Report the actual displayed frame size so an expanded tile can keep the real aspect ratio
     useEffect(() => {
         if (onRenderSizeChange && renderWidth > 0 && renderHeight > 0) {

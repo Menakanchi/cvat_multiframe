@@ -15,27 +15,22 @@ import Alert from 'antd/lib/alert';
 import Spin from 'antd/lib/spin';
 import Select from 'antd/lib/select';
 import Checkbox from 'antd/lib/checkbox';
-import Modal from 'antd/lib/modal';
-import notification from 'antd/lib/notification';
 import {
     CloseOutlined,
     LeftOutlined,
     RightOutlined,
     SaveOutlined,
     AppstoreOutlined,
-    DeleteOutlined,
-    UndoOutlined,
-    RedoOutlined,
 } from '@ant-design/icons';
 
 import { CombinedState } from 'reducers';
 import {
     changeFrameAsync,
     saveAnnotationsAsync,
-    fetchAnnotationsAsync,
 } from 'actions/annotation-actions';
 import { shallowEqual } from 'utils/redux';
 import { clamp } from 'utils/math';
+import { ANNOTATIONS_BULK_CHANGED_EVENT } from 'components/annotation-page/annotation-deletion/annotation-deletion-panel';
 import {
     validateFrameRange,
     getBatchFrames,
@@ -49,41 +44,11 @@ import {
     ObjectFilterState,
     selectTypeFilter,
     enterIDFilter,
-    planAnnotationDeletion,
-    executeAnnotationDeletion,
-    canUndoDeletionBatch,
-    canRedoDeletionBatch,
-    DeletionPlan,
-    DeletionTarget,
-    HistorySnapshot,
 } from './multiframe-utils';
 import MultiframeTile from './multiframe-tile';
 
 const DEFAULT_BATCH_SIZE = 10;
 
-function describeInterpolationWarnings(plan: DeletionPlan): string {
-    return plan.targets
-        .filter((target) => target.interpolationWarning)
-        .map((target) => {
-            const spans = (target.interpolationWarning || []).map(([from, to]) => `#${from}-#${to}`);
-            return `${target.key}: frames ${spans.join(', ')}`;
-        })
-        .join('; ');
-}
-
-function describeDeletionTarget(target: DeletionTarget, plan: DeletionPlan): string {
-    const serverID = target.serverID !== null ? ` (server ID ${target.serverID})` : '';
-    const label = target.label ? ` "${target.label}"` : '';
-    const prefix = `${target.key}${serverID} ${target.shapeType}${label}: `;
-    if (target.mode === 'delete-shape') {
-        return `${prefix}delete on frame #${target.frames[0]}`;
-    }
-    if (target.mode === 'delete-track') {
-        return `${prefix}delete the whole track (it is visible only inside this range)`;
-    }
-    return `${prefix}hide only in frames #${plan.startFrame}-#${plan.endFrame} ` +
-        `(visible on ${target.frames.length} frame(s)); frames outside the range are kept`;
-}
 const FILTER_MODE_COLORS: Record<ObjectFilterState['mode'], string> = {
     none: 'default',
     type: 'blue',
@@ -341,250 +306,23 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         });
     }, []);
 
-    // Incremented to make tiles reload their frame annotations (after deletion / undo / redo)
+    // Incremented to make tiles reload their frame annotations (after a bulk deletion / its undo / redo)
     const [tilesRefreshToken, setTilesRefreshToken] = useState<number>(0);
 
-    // Delete Modal State & Handlers
-    const [showDeleteModal, setShowDeleteModal] = useState<boolean>(false);
-    const [deleteStartFrame, setDeleteStartFrame] = useState<number | null>(null);
-    const [deleteEndFrame, setDeleteEndFrame] = useState<number | null>(null);
-    // Deletion filter: Type mode or ID mode, never both
-    const [deleteFilter, setDeleteFilter] = useState<ObjectFilterState>(EMPTY_OBJECT_FILTER);
-    const deleteLabel = deleteFilter.label;
-    const deleteIDInput = deleteFilter.idInput;
-    const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
-    const [isDeleting, setIsDeleting] = useState<boolean>(false);
-    const [deletionPlan, setDeletionPlan] = useState<DeletionPlan | null>(null);
-    const [isPlanning, setIsPlanning] = useState<boolean>(false);
-    const [lastDeletion, setLastDeletion] = useState<{
-        entries: [string, number | null][];
-        count: number;
-        description: string;
-        undone: boolean;
-    } | null>(null);
-    const [historySnapshot, setHistorySnapshot] = useState<HistorySnapshot | null>(null);
-    const reduxHistory = useSelector((state: CombinedState) => state.annotation.annotations.history);
-
-    const readHistory = useCallback(async (): Promise<HistorySnapshot | null> => {
-        try {
-            if (jobInstance?.actions && typeof jobInstance.actions.get === 'function') {
-                return await jobInstance.actions.get();
-            }
-        } catch (_e) {
-            // history is unavailable
-        }
-        return null;
-    }, [jobInstance]);
-
-    // Keep a local copy of CVAT history to enable/disable batch Undo/Redo of the last deletion
+    // Reload annotations when the Delete Annotations panel changed them
     useEffect(() => {
-        let cancelled = false;
-        if (lastDeletion) {
-            readHistory().then((snapshot) => {
-                if (!cancelled) setHistorySnapshot(snapshot);
-            });
-        }
-        return () => {
-            cancelled = true;
-        };
-    }, [lastDeletion, reduxHistory, readHistory]);
-
-    const refreshAfterAnnotationChange = useCallback(async () => {
-        dispatch(fetchAnnotationsAsync());
-        setTilesRefreshToken((value) => value + 1);
-        try {
-            const states = jobInstance ? await jobInstance.annotations.get(currentFrame, true, []) : [];
-            setAllJobStates(Array.isArray(states) ? states.filter((st: any) => st && !st.removed) : []);
-        } catch (_e) {
-            setAllJobStates([]);
-        }
-        setHistorySnapshot(await readHistory());
-    }, [dispatch, jobInstance, currentFrame, readHistory]);
-
-    const handleOpenDeleteModal = useCallback(() => {
-        setDeleteStartFrame(rangeStart);
-        setDeleteEndFrame(rangeEnd);
-        setDeleteFilter(objectFilter);
-        setConfirmDelete(false);
-        setDeletionPlan(null);
-        setShowDeleteModal(true);
-    }, [rangeStart, rangeEnd, objectFilter]);
-
-    const deleteValidation = validateFrameRange(
-        deleteStartFrame,
-        deleteEndFrame,
-        jobStartFrame,
-        jobStopFrame,
-        frameNumbers,
-    );
-
-    const deleteIDResolution = useMemo(() => (
-        resolveObjectByIDAndType(deleteIDInput, 'all', combinedStates)
-    ), [deleteIDInput, combinedStates]);
-
-    const hasDeleteID = Boolean(deleteIDInput.trim());
-    const deleteIDIsUsable = !hasDeleteID || deleteIDResolution.status === 'VALID';
-
-    // Dry-run preview: recomputed whenever the deletion parameters change
-    useEffect(() => {
-        setConfirmDelete(false);
-        if (!showDeleteModal || !deleteValidation.isValid || !deleteIDIsUsable ||
-            deleteStartFrame === null || deleteEndFrame === null || !jobInstance) {
-            setDeletionPlan(null);
-            setIsPlanning(false);
-            return undefined;
-        }
-
-        let cancelled = false;
-        setIsPlanning(true);
-        const timer = setTimeout(async () => {
+        const onAnnotationsChanged = async (): Promise<void> => {
+            setTilesRefreshToken((value) => value + 1);
             try {
-                const plan = await planAnnotationDeletion({
-                    jobInstance,
-                    startFrame: deleteStartFrame,
-                    endFrame: deleteEndFrame,
-                    stopFrame: jobStopFrame,
-                    targetLabel: deleteLabel,
-                    targetClientID: hasDeleteID ? deleteIDResolution.resolvedID : null,
-                });
-                if (!cancelled) setDeletionPlan(plan);
-            } catch (_err: any) {
-                if (!cancelled) setDeletionPlan(null);
-            } finally {
-                if (!cancelled) setIsPlanning(false);
+                const states = jobInstance ? await jobInstance.annotations.get(currentFrame, true, []) : [];
+                setAllJobStates(Array.isArray(states) ? states.filter((st: any) => st && !st.removed) : []);
+            } catch (_e) {
+                setAllJobStates([]);
             }
-        }, 250);
-
-        return () => {
-            cancelled = true;
-            clearTimeout(timer);
         };
-    }, [
-        showDeleteModal,
-        deleteValidation.isValid,
-        deleteIDIsUsable,
-        deleteStartFrame,
-        deleteEndFrame,
-        deleteLabel,
-        hasDeleteID,
-        deleteIDResolution.resolvedID,
-        jobInstance,
-        jobStopFrame,
-        tilesRefreshToken,
-    ]);
-
-    const canExecuteDelete = Boolean(
-        deletionPlan && deletionPlan.isValid && confirmDelete && !isPlanning && !isDeleting,
-    );
-
-    const handleExecuteDelete = useCallback(async () => {
-        if (!deletionPlan || !deletionPlan.isValid || !confirmDelete) {
-            return;
-        }
-
-        setIsDeleting(true);
-        try {
-            const before = await readHistory();
-            const result = await executeAnnotationDeletion(jobInstance, deletionPlan);
-            const after = await readHistory();
-
-            // Verify the recorded undo steps so the deletion can be undone/redone as one batch
-            let entries: [string, number | null][] = [];
-            if (before && after && result.historySteps > 0 && after.undo.length >= result.historySteps) {
-                const expectedLength = Math.min(before.undo.length + result.historySteps, after.undo.length);
-                if (after.undo.length === expectedLength) {
-                    entries = after.undo.slice(-result.historySteps);
-                }
-            }
-            setLastDeletion(entries.length === result.historySteps && result.historySteps > 0 ? {
-                entries,
-                count: result.historySteps,
-                description: `${result.deletedObjects} deleted, ${result.hiddenTracks} track(s) hidden ` +
-                    `in frames #${deletionPlan.startFrame}-#${deletionPlan.endFrame}`,
-                undone: false,
-            } : null);
-
-            await refreshAfterAnnotationChange();
-
-            if (inputObjectID && deletionPlan.targetClientID !== null &&
-                selectedObject && selectedObject.clientID === deletionPlan.targetClientID &&
-                result.deletedObjects > 0) {
-                applyObjectFilter(EMPTY_OBJECT_FILTER);
-            }
-
-            setShowDeleteModal(false);
-            const hasProblems = result.errors.length > 0 || result.skippedLocked.length > 0;
-            const notify = hasProblems ? notification.warning : notification.success;
-            notify({
-                message: hasProblems ? 'Deletion finished with warnings' : 'Annotations deleted',
-                description: [
-                    `${result.deletedObjects} object(s) deleted and ${result.hiddenTracks} track(s) hidden ` +
-                    `in frames #${deletionPlan.startFrame}-#${deletionPlan.endFrame}.`,
-                    result.skippedLocked.length ? `Skipped locked: ${result.skippedLocked.join(', ')}.` : '',
-                    result.errors.length ? `Errors: ${result.errors.join('; ')}` : '',
-                    'Use "Undo deletion" (or Ctrl+Z step by step) to revert, then save to persist.',
-                ].filter(Boolean).join(' '),
-                duration: 6,
-            });
-        } catch (err: any) {
-            notification.error({
-                message: 'Delete Failed',
-                description: err?.message || 'Could not complete deletion',
-            });
-        } finally {
-            setIsDeleting(false);
-        }
-    }, [
-        deletionPlan,
-        confirmDelete,
-        readHistory,
-        jobInstance,
-        refreshAfterAnnotationChange,
-        inputObjectID,
-        selectedObject,
-        applyObjectFilter,
-    ]);
-
-    const canUndoLastDeletion = Boolean(
-        lastDeletion && !lastDeletion.undone &&
-        canUndoDeletionBatch(historySnapshot, lastDeletion.entries, lastDeletion.count),
-    );
-    const canRedoLastDeletion = Boolean(
-        lastDeletion && lastDeletion.undone &&
-        canRedoDeletionBatch(historySnapshot, lastDeletion.entries, lastDeletion.count),
-    );
-
-    const handleUndoLastDeletion = useCallback(async () => {
-        if (!lastDeletion || !jobInstance) return;
-        const snapshot = await readHistory();
-        if (!canUndoDeletionBatch(snapshot, lastDeletion.entries, lastDeletion.count)) {
-            notification.warning({
-                message: 'Cannot undo deletion as one step',
-                description: 'Other changes were made after the deletion. Use Ctrl+Z step by step instead.',
-            });
-            setHistorySnapshot(snapshot);
-            return;
-        }
-        await jobInstance.actions.undo(lastDeletion.count);
-        setLastDeletion({ ...lastDeletion, undone: true });
-        await refreshAfterAnnotationChange();
-    }, [lastDeletion, jobInstance, readHistory, refreshAfterAnnotationChange]);
-
-    const handleRedoLastDeletion = useCallback(async () => {
-        if (!lastDeletion || !jobInstance) return;
-        const snapshot = await readHistory();
-        if (!canRedoDeletionBatch(snapshot, lastDeletion.entries, lastDeletion.count)) {
-            notification.warning({
-                message: 'Cannot redo deletion as one step',
-                description: 'The history changed after the deletion was undone.',
-            });
-            setHistorySnapshot(snapshot);
-            return;
-        }
-        await jobInstance.actions.redo(lastDeletion.count);
-        setLastDeletion({ ...lastDeletion, undone: false });
-        await refreshAfterAnnotationChange();
-    }, [lastDeletion, jobInstance, readHistory, refreshAfterAnnotationChange]);
+        window.addEventListener(ANNOTATIONS_BULK_CHANGED_EVENT, onAnnotationsChanged);
+        return () => window.removeEventListener(ANNOTATIONS_BULK_CHANGED_EVENT, onAnnotationsChanged);
+    }, [jobInstance, currentFrame]);
 
     useEffect(() => {
         if (typeof initialStartFrame === 'number') {
@@ -847,32 +585,6 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
 
                 {/* Right: Actions and Exit buttons */}
                 <div className='cvat-multiframe-exit-group'>
-                    <Button
-                        type='primary'
-                        danger
-                        size='small'
-                        icon={<DeleteOutlined />}
-                        onClick={handleOpenDeleteModal}
-                        className='cvat-multiframe-delete-btn'
-                        style={{ marginRight: 8 }}
-                        title='Delete annotations by shape type, object ID, and frame range'
-                    >
-                        Delete Annotations
-                    </Button>
-                    {lastDeletion && (
-                        <Button
-                            size='small'
-                            icon={lastDeletion.undone ? <RedoOutlined /> : <UndoOutlined />}
-                            disabled={lastDeletion.undone ? !canRedoLastDeletion : !canUndoLastDeletion}
-                            onClick={lastDeletion.undone ? handleRedoLastDeletion : handleUndoLastDeletion}
-                            className='cvat-multiframe-undo-deletion-btn'
-                            style={{ marginRight: 8 }}
-                            title={`${lastDeletion.undone ? 'Redo' : 'Undo'} the last deletion as one step ` +
-                                `(${lastDeletion.count} CVAT history steps): ${lastDeletion.description}`}
-                        >
-                            {lastDeletion.undone ? 'Redo deletion' : 'Undo deletion'}
-                        </Button>
-                    )}
                     {zoomedFrame !== null && (
                         <Button
                             size='small'
@@ -1008,228 +720,6 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     })}
                 </div>
             )}
-
-            {/* Delete Annotations Modal */}
-            <Modal
-                title='Delete Annotations by Range'
-                open={showDeleteModal}
-                onCancel={() => !isDeleting && setShowDeleteModal(false)}
-                maskClosable={!isDeleting}
-                footer={[
-                    <Button key='cancel' onClick={() => setShowDeleteModal(false)} disabled={isDeleting}>
-                        Cancel
-                    </Button>,
-                    <Button
-                        key='delete'
-                        type='primary'
-                        danger
-                        loading={isDeleting}
-                        disabled={!canExecuteDelete}
-                        onClick={handleExecuteDelete}
-                        className='cvat-multiframe-delete-confirm-btn'
-                    >
-                        {deletionPlan && deletionPlan.targets.length > 0 ?
-                            `Delete ${deletionPlan.targets.length} object(s)` : 'Delete Annotations'}
-                    </Button>,
-                ]}
-                className='cvat-multiframe-delete-modal'
-                destroyOnClose
-            >
-                <div className='cvat-multiframe-delete-modal-content'>
-                    <div style={{ marginBottom: 16 }}>
-                        <Text strong style={{ display: 'block', marginBottom: 6 }}>
-                            Frame Range (inclusive):
-                        </Text>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <InputNumber
-                                size='small'
-                                style={{ width: 110 }}
-                                value={deleteStartFrame}
-                                min={jobStartFrame}
-                                max={jobStopFrame}
-                                precision={0}
-                                onChange={(val: number | null) => setDeleteStartFrame(val)}
-                                placeholder='Start frame'
-                                disabled={isDeleting}
-                            />
-                            <Text>to</Text>
-                            <InputNumber
-                                size='small'
-                                style={{ width: 110 }}
-                                value={deleteEndFrame}
-                                min={jobStartFrame}
-                                max={jobStopFrame}
-                                precision={0}
-                                onChange={(val: number | null) => setDeleteEndFrame(val)}
-                                placeholder='End frame'
-                                disabled={isDeleting}
-                            />
-                        </div>
-                        {!deleteValidation.isValid && deleteValidation.error && (
-                            <Alert
-                                type='error'
-                                showIcon
-                                message={deleteValidation.error}
-                                style={{ marginTop: 8 }}
-                            />
-                        )}
-                    </div>
-
-                    <div style={{ marginBottom: 8 }}>
-                        <Text strong>Filter by Type or by Object ID (not both): </Text>
-                        <Tag
-                            color={FILTER_MODE_COLORS[deleteFilter.mode]}
-                            className='cvat-multiframe-delete-filter-mode-tag'
-                        >
-                            {deleteFilter.mode === 'none' ?
-                                'All objects in the range' : describeObjectFilter(deleteFilter)}
-                        </Tag>
-                    </div>
-
-                    <div style={{ marginBottom: 16 }}>
-                        <Text strong style={{ display: 'block', marginBottom: 6 }}>
-                            Object Type (label):
-                        </Text>
-                        <Select
-                            size='small'
-                            value={deleteLabel}
-                            onChange={(val: string) => setDeleteFilter(selectTypeFilter(val))}
-                            style={{ width: 180 }}
-                            className='cvat-multiframe-delete-type-select'
-                            disabled={isDeleting}
-                            showSearch
-                        >
-                            <Select.Option value='all'>All Types</Select.Option>
-                            {availableLabels.map((name) => (
-                                <Select.Option key={name} value={name}>
-                                    {name}
-                                </Select.Option>
-                            ))}
-                        </Select>
-                    </div>
-
-                    <div style={{ marginBottom: 16 }}>
-                        <Text strong style={{ display: 'block', marginBottom: 6 }}>
-                            Object ID:
-                        </Text>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                            <Input
-                                size='small'
-                                placeholder='12, track_12, shape_12, id:12'
-                                value={deleteIDInput}
-                                onChange={(e) => setDeleteFilter(enterIDFilter(e.target.value))}
-                                allowClear
-                                style={{ width: 220 }}
-                                className='cvat-multiframe-delete-id-input'
-                                disabled={isDeleting}
-                            />
-                            {hasDeleteID && (
-                                <Tag
-                                    color={deleteIDResolution.status === 'VALID' ? 'success' : 'error'}
-                                    title={deleteIDResolution.message}
-                                >
-                                    {deleteIDResolution.message}
-                                </Tag>
-                            )}
-                        </div>
-                        <Text type='secondary' style={{ fontSize: 11, marginTop: 4, display: 'block' }}>
-                            Choosing a type clears the Object ID and entering an ID resets the type.
-                            A Skeleton landmark ID targets its complete parent Skeleton.
-                            Locked objects are never deleted.
-                        </Text>
-                    </div>
-
-                    {/* Preview Card: actual targets from a dry run */}
-                    <div className='cvat-multiframe-delete-preview-card'>
-                        <Text strong style={{ color: '#faad14', display: 'block', marginBottom: 4 }}>
-                            Deletion Preview:
-                        </Text>
-                        {isPlanning && <Spin size='small' />}
-                        {!isPlanning && !deletionPlan && (
-                            <Text type='secondary' style={{ fontSize: 12 }}>
-                                Enter a valid frame range and filters to preview the affected objects.
-                            </Text>
-                        )}
-                        {!isPlanning && deletionPlan && (
-                            <div style={{ fontSize: 12, lineHeight: 1.6 }}>
-                                <div>
-                                    <Text strong>Affected Range: </Text>
-                                    <span>
-                                        {`Frames #${deletionPlan.startFrame} to #${deletionPlan.endFrame} `}
-                                        {`(inclusive, ${deletionPlan.endFrame - deletionPlan.startFrame + 1} frames)`}
-                                    </span>
-                                </div>
-                                <div>
-                                    <Text strong>Objects: </Text>
-                                    <span className='cvat-multiframe-delete-preview-count'>
-                                        {deletionPlan.targets.length}
-                                    </span>
-                                    <Text strong style={{ marginLeft: 12 }}>Undo steps: </Text>
-                                    <span>{`${deletionPlan.totalHistorySteps} / 32`}</span>
-                                </div>
-                                {deletionPlan.targets.length > 0 && (
-                                    <ul className='cvat-multiframe-delete-preview-list'>
-                                        {deletionPlan.targets.slice(0, 50).map((target) => (
-                                            <li key={target.key}>{describeDeletionTarget(target, deletionPlan)}</li>
-                                        ))}
-                                        {deletionPlan.targets.length > 50 && (
-                                            <li>{`... and ${deletionPlan.targets.length - 50} more`}</li>
-                                        )}
-                                    </ul>
-                                )}
-                                {deletionPlan.targets.some((target) => target.interpolationWarning) && (
-                                    <Alert
-                                        type='warning'
-                                        showIcon
-                                        className='cvat-multiframe-delete-interpolation-warning'
-                                        style={{ marginTop: 8 }}
-                                        message='Polygon / polyline / points tracks: nearby frames may shift slightly'
-                                        description={describeInterpolationWarnings(deletionPlan)}
-                                    />
-                                )}
-                                {deletionPlan.skippedLocked.length > 0 && (
-                                    <div>
-                                        <Text type='warning'>
-                                            {'Skipped (locked): '}
-                                            {deletionPlan.skippedLocked.map((item) => item.key).join(', ')}
-                                        </Text>
-                                    </div>
-                                )}
-                                {deletionPlan.error && (
-                                    <Alert
-                                        type={deletionPlan.exceedsHistoryLimit ? 'error' : 'info'}
-                                        showIcon
-                                        message={deletionPlan.error}
-                                        style={{ marginTop: 8 }}
-                                    />
-                                )}
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Mandatory confirmation for every deletion */}
-                    {deletionPlan && deletionPlan.isValid && !isPlanning && (
-                        <div style={{ marginTop: 16 }}>
-                            <Alert
-                                type='warning'
-                                showIcon
-                                message={`${deletionPlan.targets.length} object(s) will be changed. ` +
-                                    'Annotations outside the frame range and locked objects are not affected.'}
-                                style={{ marginBottom: 12 }}
-                            />
-                            <Checkbox
-                                checked={confirmDelete}
-                                onChange={(e) => setConfirmDelete(e.target.checked)}
-                                className='cvat-multiframe-confirm-delete-checkbox'
-                                disabled={isDeleting}
-                            >
-                                {'I reviewed the preview and want to delete these '}
-                                {`${deletionPlan.targets.length} object(s)`}
-                            </Checkbox>
-                        </div>
-                    )}
-                </div>
-            </Modal>
         </div>
     );
 }
