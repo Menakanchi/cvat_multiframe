@@ -4,7 +4,7 @@
 
 import './styles.scss';
 import React, {
-    useCallback, useEffect, useRef, useState,
+    useCallback, useEffect, useState,
 } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import Button from 'antd/lib/button';
@@ -24,7 +24,7 @@ import {
 } from '@ant-design/icons';
 
 import { CombinedState } from 'reducers';
-import { fetchAnnotationsAsync, collapseSidebar } from 'actions/annotation-actions';
+import { fetchAnnotationsAsync } from 'actions/annotation-actions';
 import { shallowEqual } from 'utils/redux';
 import {
     validateFrameRange,
@@ -45,10 +45,6 @@ import {
 
 /** Fired on window after a bulk deletion / its undo / redo, so other views (Multi-Frame) reload annotations */
 export const ANNOTATIONS_BULK_CHANGED_EVENT = 'cvat-annotations-bulk-changed';
-
-const PANEL_WIDTH = 340;
-// Matches the width transition in styles.scss
-const PANEL_TRANSITION_MS = 200;
 
 const FILTER_MODE_COLORS: Record<ObjectFilterState['mode'], string> = {
     none: 'default',
@@ -98,7 +94,13 @@ async function collectRangeStates(jobInstance: any, frames: number[]): Promise<a
     return Array.from(merged.values());
 }
 
-function AnnotationDeletionPanel(): JSX.Element {
+interface Props {
+    /** The panel is visible: the dry-run preview is computed only while it is shown */
+    active: boolean;
+}
+
+function AnnotationDeletionPanel(props: Props): JSX.Element {
+    const { active } = props;
     const dispatch = useDispatch();
     const {
         jobInstance,
@@ -109,7 +111,6 @@ function AnnotationDeletionPanel(): JSX.Element {
         multiframeActive,
         multiframeStart,
         multiframeEnd,
-        objectsSidebarCollapsed,
     } = useSelector((state: CombinedState) => ({
         jobInstance: state.annotation.job.instance,
         currentFrame: state.annotation.player.frame.number,
@@ -119,14 +120,12 @@ function AnnotationDeletionPanel(): JSX.Element {
         multiframeActive: state.annotation.multiframe.active,
         multiframeStart: state.annotation.multiframe.startFrame,
         multiframeEnd: state.annotation.multiframe.endFrame,
-        objectsSidebarCollapsed: state.annotation.sidebarCollapsed,
     }), shallowEqual);
 
     const hasValidFrames = Array.isArray(frameNumbers) && frameNumbers.length > 0;
     const jobStartFrame = hasValidFrames ? frameNumbers[0] : (jobInstance?.startFrame ?? 0);
     const jobStopFrame = hasValidFrames ? frameNumbers[frameNumbers.length - 1] : (jobInstance?.stopFrame ?? 0);
 
-    const [collapsed, setCollapsed] = useState<boolean>(true);
     const [startFrame, setStartFrame] = useState<number | null>(null);
     const [endFrame, setEndFrame] = useState<number | null>(null);
     // Deletion filter: Type mode or ID mode, never both
@@ -152,28 +151,9 @@ function AnnotationDeletionPanel(): JSX.Element {
             .filter((name: any) => typeof name === 'string' && name),
     ));
 
-    // Only one right sidebar is open at a time: opening this panel closes the objects sidebar
-    const toggleCollapsed = useCallback(() => {
-        if (collapsed && !objectsSidebarCollapsed) {
-            dispatch(collapseSidebar());
-        }
-        setCollapsed(!collapsed);
-        // let the canvas / Multi-Frame grid fit the new workspace width
-        setTimeout(() => window.dispatchEvent(new Event('resize')), PANEL_TRANSITION_MS + 50);
-    }, [collapsed, objectsSidebarCollapsed, dispatch]);
-
-    // ... and opening the objects sidebar closes this panel
-    const prevObjectsSidebarCollapsed = useRef<boolean>(objectsSidebarCollapsed);
-    useEffect(() => {
-        if (prevObjectsSidebarCollapsed.current && !objectsSidebarCollapsed) {
-            setCollapsed(true);
-        }
-        prevObjectsSidebarCollapsed.current = objectsSidebarCollapsed;
-    }, [objectsSidebarCollapsed]);
-
     // Default range when the panel is opened for the first time
     useEffect(() => {
-        if (collapsed || startFrame !== null || endFrame !== null) return;
+        if (!active || startFrame !== null || endFrame !== null) return;
         if (multiframeActive && typeof multiframeStart === 'number' && typeof multiframeEnd === 'number') {
             setStartFrame(multiframeStart);
             setEndFrame(multiframeEnd);
@@ -181,7 +161,7 @@ function AnnotationDeletionPanel(): JSX.Element {
             setStartFrame(currentFrame);
             setEndFrame(currentFrame);
         }
-    }, [collapsed, startFrame, endFrame, multiframeActive, multiframeStart, multiframeEnd, currentFrame]);
+    }, [active, startFrame, endFrame, multiframeActive, multiframeStart, multiframeEnd, currentFrame]);
 
     const rangeValidation = validateFrameRange(startFrame, endFrame, jobStartFrame, jobStopFrame, frameNumbers);
     const { idInput } = filter;
@@ -214,7 +194,7 @@ function AnnotationDeletionPanel(): JSX.Element {
     // Dry-run preview: recomputed whenever the deletion parameters or the annotations change
     useEffect(() => {
         setConfirmDelete(false);
-        if (collapsed || !rangeValidation.isValid || startFrame === null || endFrame === null || !jobInstance) {
+        if (!active || !rangeValidation.isValid || startFrame === null || endFrame === null || !jobInstance) {
             setDeletionPlan(null);
             setIDResolution(null);
             setIsPlanning(false);
@@ -263,7 +243,7 @@ function AnnotationDeletionPanel(): JSX.Element {
             clearTimeout(timer);
         };
     }, [
-        collapsed,
+        active,
         rangeValidation.isValid,
         startFrame,
         endFrame,
@@ -381,249 +361,227 @@ function AnnotationDeletionPanel(): JSX.Element {
     }, [lastDeletion, jobInstance, readHistory, notifyAnnotationsChanged]);
 
     return (
-        <div
-            className={`cvat-annotation-deletion-panel ${collapsed ? 'cvat-annotation-deletion-panel-collapsed' : ''}`}
-            style={{ width: collapsed ? 0 : PANEL_WIDTH }}
-        >
-            {/* Pull-out tab to show / hide the panel, like the objects sidebar collapser */}
-            {/* eslint-disable-next-line */}
-            <span
-                className='cvat-annotation-deletion-sider'
-                onClick={toggleCollapsed}
-                title={collapsed ? 'Show Delete Annotations' : 'Hide Delete Annotations'}
-            >
-                <DeleteOutlined className='cvat-annotation-deletion-sider-icon' />
-            </span>
+        <div className='cvat-annotation-deletion-content'>
+            <div className='cvat-annotation-deletion-section'>
+                <Text strong className='cvat-annotation-deletion-field-label'>
+                    Frame Range (inclusive):
+                </Text>
+                <div className='cvat-annotation-deletion-row'>
+                    <InputNumber
+                        size='small'
+                        style={{ width: 100 }}
+                        value={startFrame}
+                        min={jobStartFrame}
+                        max={jobStopFrame}
+                        precision={0}
+                        onChange={(val: number | null) => setStartFrame(val)}
+                        placeholder='Start'
+                        disabled={isDeleting}
+                        className='cvat-annotation-deletion-start-input'
+                    />
+                    <Text>to</Text>
+                    <InputNumber
+                        size='small'
+                        style={{ width: 100 }}
+                        value={endFrame}
+                        min={jobStartFrame}
+                        max={jobStopFrame}
+                        precision={0}
+                        onChange={(val: number | null) => setEndFrame(val)}
+                        placeholder='End'
+                        disabled={isDeleting}
+                        className='cvat-annotation-deletion-end-input'
+                    />
+                    <Button
+                        size='small'
+                        onClick={() => {
+                            setStartFrame(currentFrame);
+                            setEndFrame(currentFrame);
+                        }}
+                        disabled={isDeleting}
+                        title='Use the current frame only'
+                    >
+                        Current
+                    </Button>
+                </div>
+                {!rangeValidation.isValid && rangeValidation.error && (
+                    <Alert type='error' showIcon message={rangeValidation.error} style={{ marginTop: 8 }} />
+                )}
+            </div>
 
-            {!collapsed && (
-                <div className='cvat-annotation-deletion-content' style={{ width: PANEL_WIDTH }}>
-                    <Text strong className='cvat-annotation-deletion-title'>
-                        <DeleteOutlined />
-                        {' Delete Annotations'}
+            <div className='cvat-annotation-deletion-section'>
+                <Text strong>Filter (Type or Object ID, not both): </Text>
+                <Tag color={FILTER_MODE_COLORS[filter.mode]} className='cvat-annotation-deletion-filter-tag'>
+                    {describeFilter(filter)}
+                </Tag>
+            </div>
+
+            <div className='cvat-annotation-deletion-section'>
+                <Text strong className='cvat-annotation-deletion-field-label'>
+                    Object Type (label):
+                </Text>
+                <Select
+                    size='small'
+                    value={filter.label}
+                    onChange={(val: string) => setFilter(selectTypeFilter(val))}
+                    style={{ width: '100%' }}
+                    className='cvat-annotation-deletion-type-select'
+                    disabled={isDeleting}
+                    showSearch
+                >
+                    <Select.Option value='all'>All Types</Select.Option>
+                    {availableLabels.map((name) => (
+                        <Select.Option key={name} value={name}>
+                            {name}
+                        </Select.Option>
+                    ))}
+                </Select>
+            </div>
+
+            <div className='cvat-annotation-deletion-section'>
+                <Text strong className='cvat-annotation-deletion-field-label'>
+                    Object ID:
+                </Text>
+                <Input
+                    size='small'
+                    placeholder='12, track_12, shape_12, id:12'
+                    value={idInput}
+                    onChange={(e) => setFilter(enterIDFilter(e.target.value))}
+                    allowClear
+                    className='cvat-annotation-deletion-id-input'
+                    disabled={isDeleting}
+                />
+                {hasID && idResolution && (
+                    <Tag
+                        color={idResolution.status === 'VALID' ? 'success' : 'error'}
+                        title={idResolution.message}
+                        className='cvat-annotation-deletion-id-status'
+                    >
+                        {idResolution.message}
+                    </Tag>
+                )}
+                <Text type='secondary' className='cvat-annotation-deletion-hint'>
+                    Choosing a type clears the Object ID and entering an ID resets the type.
+                    A Skeleton landmark ID targets its complete parent Skeleton.
+                    Locked objects are never deleted.
+                </Text>
+            </div>
+
+            {/* Preview: actual targets from a dry run */}
+            <div className='cvat-annotation-deletion-preview-card'>
+                <Text strong className='cvat-annotation-deletion-preview-title'>
+                    Deletion Preview:
+                </Text>
+                {isPlanning && <Spin size='small' />}
+                {!isPlanning && !deletionPlan && (
+                    <Text type='secondary' style={{ fontSize: 12 }}>
+                        Enter a valid frame range and filters to preview the affected objects.
                     </Text>
-
-                    <div className='cvat-annotation-deletion-section'>
-                        <Text strong className='cvat-annotation-deletion-field-label'>
-                            Frame Range (inclusive):
-                        </Text>
-                        <div className='cvat-annotation-deletion-row'>
-                            <InputNumber
-                                size='small'
-                                style={{ width: 100 }}
-                                value={startFrame}
-                                min={jobStartFrame}
-                                max={jobStopFrame}
-                                precision={0}
-                                onChange={(val: number | null) => setStartFrame(val)}
-                                placeholder='Start'
-                                disabled={isDeleting}
-                                className='cvat-annotation-deletion-start-input'
-                            />
-                            <Text>to</Text>
-                            <InputNumber
-                                size='small'
-                                style={{ width: 100 }}
-                                value={endFrame}
-                                min={jobStartFrame}
-                                max={jobStopFrame}
-                                precision={0}
-                                onChange={(val: number | null) => setEndFrame(val)}
-                                placeholder='End'
-                                disabled={isDeleting}
-                                className='cvat-annotation-deletion-end-input'
-                            />
-                            <Button
-                                size='small'
-                                onClick={() => {
-                                    setStartFrame(currentFrame);
-                                    setEndFrame(currentFrame);
-                                }}
-                                disabled={isDeleting}
-                                title='Use the current frame only'
-                            >
-                                Current
-                            </Button>
+                )}
+                {!isPlanning && deletionPlan && (
+                    <div style={{ fontSize: 12, lineHeight: 1.6 }}>
+                        <div>
+                            <Text strong>Range: </Text>
+                            <span>
+                                {`#${deletionPlan.startFrame} - #${deletionPlan.endFrame} `}
+                                {`(${deletionPlan.endFrame - deletionPlan.startFrame + 1} frames)`}
+                            </span>
                         </div>
-                        {!rangeValidation.isValid && rangeValidation.error && (
-                            <Alert type='error' showIcon message={rangeValidation.error} style={{ marginTop: 8 }} />
-                        )}
-                    </div>
-
-                    <div className='cvat-annotation-deletion-section'>
-                        <Text strong>Filter (Type or Object ID, not both): </Text>
-                        <Tag color={FILTER_MODE_COLORS[filter.mode]} className='cvat-annotation-deletion-filter-tag'>
-                            {describeFilter(filter)}
-                        </Tag>
-                    </div>
-
-                    <div className='cvat-annotation-deletion-section'>
-                        <Text strong className='cvat-annotation-deletion-field-label'>
-                            Object Type (label):
-                        </Text>
-                        <Select
-                            size='small'
-                            value={filter.label}
-                            onChange={(val: string) => setFilter(selectTypeFilter(val))}
-                            style={{ width: '100%' }}
-                            className='cvat-annotation-deletion-type-select'
-                            disabled={isDeleting}
-                            showSearch
-                        >
-                            <Select.Option value='all'>All Types</Select.Option>
-                            {availableLabels.map((name) => (
-                                <Select.Option key={name} value={name}>
-                                    {name}
-                                </Select.Option>
-                            ))}
-                        </Select>
-                    </div>
-
-                    <div className='cvat-annotation-deletion-section'>
-                        <Text strong className='cvat-annotation-deletion-field-label'>
-                            Object ID:
-                        </Text>
-                        <Input
-                            size='small'
-                            placeholder='12, track_12, shape_12, id:12'
-                            value={idInput}
-                            onChange={(e) => setFilter(enterIDFilter(e.target.value))}
-                            allowClear
-                            className='cvat-annotation-deletion-id-input'
-                            disabled={isDeleting}
-                        />
-                        {hasID && idResolution && (
-                            <Tag
-                                color={idResolution.status === 'VALID' ? 'success' : 'error'}
-                                title={idResolution.message}
-                                className='cvat-annotation-deletion-id-status'
-                            >
-                                {idResolution.message}
-                            </Tag>
-                        )}
-                        <Text type='secondary' className='cvat-annotation-deletion-hint'>
-                            Choosing a type clears the Object ID and entering an ID resets the type.
-                            A Skeleton landmark ID targets its complete parent Skeleton.
-                            Locked objects are never deleted.
-                        </Text>
-                    </div>
-
-                    {/* Preview: actual targets from a dry run */}
-                    <div className='cvat-annotation-deletion-preview-card'>
-                        <Text strong className='cvat-annotation-deletion-preview-title'>
-                            Deletion Preview:
-                        </Text>
-                        {isPlanning && <Spin size='small' />}
-                        {!isPlanning && !deletionPlan && (
-                            <Text type='secondary' style={{ fontSize: 12 }}>
-                                Enter a valid frame range and filters to preview the affected objects.
-                            </Text>
-                        )}
-                        {!isPlanning && deletionPlan && (
-                            <div style={{ fontSize: 12, lineHeight: 1.6 }}>
-                                <div>
-                                    <Text strong>Range: </Text>
-                                    <span>
-                                        {`#${deletionPlan.startFrame} - #${deletionPlan.endFrame} `}
-                                        {`(${deletionPlan.endFrame - deletionPlan.startFrame + 1} frames)`}
-                                    </span>
-                                </div>
-                                <div>
-                                    <Text strong>Objects: </Text>
-                                    <span className='cvat-annotation-deletion-preview-count'>
-                                        {deletionPlan.targets.length}
-                                    </span>
-                                    <Text strong style={{ marginLeft: 12 }}>Undo steps: </Text>
-                                    <span>{`${deletionPlan.totalHistorySteps} / 32`}</span>
-                                </div>
-                                {deletionPlan.targets.length > 0 && (
-                                    <ul className='cvat-annotation-deletion-preview-list'>
-                                        {deletionPlan.targets.slice(0, 50).map((target) => (
-                                            <li key={target.key}>{describeDeletionTarget(target, deletionPlan)}</li>
-                                        ))}
-                                        {deletionPlan.targets.length > 50 && (
-                                            <li>{`... and ${deletionPlan.targets.length - 50} more`}</li>
-                                        )}
-                                    </ul>
+                        <div>
+                            <Text strong>Objects: </Text>
+                            <span className='cvat-annotation-deletion-preview-count'>
+                                {deletionPlan.targets.length}
+                            </span>
+                            <Text strong style={{ marginLeft: 12 }}>Undo steps: </Text>
+                            <span>{`${deletionPlan.totalHistorySteps} / 32`}</span>
+                        </div>
+                        {deletionPlan.targets.length > 0 && (
+                            <ul className='cvat-annotation-deletion-preview-list'>
+                                {deletionPlan.targets.slice(0, 50).map((target) => (
+                                    <li key={target.key}>{describeDeletionTarget(target, deletionPlan)}</li>
+                                ))}
+                                {deletionPlan.targets.length > 50 && (
+                                    <li>{`... and ${deletionPlan.targets.length - 50} more`}</li>
                                 )}
-                                {deletionPlan.targets.some((target) => target.interpolationWarning) && (
-                                    <Alert
-                                        type='warning'
-                                        showIcon
-                                        style={{ marginTop: 8 }}
-                                        message='Polygon / polyline / points tracks: nearby frames may shift slightly'
-                                        description={describeInterpolationWarnings(deletionPlan)}
-                                    />
-                                )}
-                                {deletionPlan.skippedLocked.length > 0 && (
-                                    <div>
-                                        <Text type='warning'>
-                                            {'Skipped (locked): '}
-                                            {deletionPlan.skippedLocked.map((item) => item.key).join(', ')}
-                                        </Text>
-                                    </div>
-                                )}
-                                {deletionPlan.error && (
-                                    <Alert
-                                        type={deletionPlan.exceedsHistoryLimit ? 'error' : 'info'}
-                                        showIcon
-                                        message={deletionPlan.error}
-                                        style={{ marginTop: 8 }}
-                                    />
-                                )}
-                            </div>
+                            </ul>
                         )}
-                    </div>
-
-                    {/* Mandatory confirmation for every deletion */}
-                    {deletionPlan && deletionPlan.isValid && !isPlanning && (
-                        <div className='cvat-annotation-deletion-section'>
+                        {deletionPlan.targets.some((target) => target.interpolationWarning) && (
                             <Alert
                                 type='warning'
                                 showIcon
-                                message={`${deletionPlan.targets.length} object(s) will be changed. ` +
-                                    'Annotations outside the frame range and locked objects are not affected.'}
-                                style={{ marginBottom: 8 }}
+                                style={{ marginTop: 8 }}
+                                message='Polygon / polyline / points tracks: nearby frames may shift slightly'
+                                description={describeInterpolationWarnings(deletionPlan)}
                             />
-                            <Checkbox
-                                checked={confirmDelete}
-                                onChange={(e) => setConfirmDelete(e.target.checked)}
-                                className='cvat-annotation-deletion-confirm-checkbox'
-                                disabled={isDeleting}
-                            >
-                                {'I reviewed the preview and want to delete these '}
-                                {`${deletionPlan.targets.length} object(s)`}
-                            </Checkbox>
-                        </div>
-                    )}
-
-                    <div className='cvat-annotation-deletion-actions'>
-                        <Button
-                            type='primary'
-                            danger
-                            icon={<DeleteOutlined />}
-                            loading={isDeleting}
-                            disabled={!canExecuteDelete}
-                            onClick={handleExecuteDelete}
-                            className='cvat-annotation-deletion-confirm-btn'
-                        >
-                            {deletionPlan && deletionPlan.targets.length > 0 ?
-                                `Delete ${deletionPlan.targets.length} object(s)` : 'Delete'}
-                        </Button>
-                        {lastDeletion && (
-                            <Button
-                                icon={lastDeletion.undone ? <RedoOutlined /> : <UndoOutlined />}
-                                disabled={lastDeletion.undone ? !canRedoLastDeletion : !canUndoLastDeletion}
-                                onClick={lastDeletion.undone ? handleRedoLastDeletion : handleUndoLastDeletion}
-                                className='cvat-annotation-deletion-undo-btn'
-                                title={`${lastDeletion.undone ? 'Redo' : 'Undo'} the last deletion as one step ` +
-                                    `(${lastDeletion.count} CVAT history steps): ${lastDeletion.description}`}
-                            >
-                                {lastDeletion.undone ? 'Redo deletion' : 'Undo deletion'}
-                            </Button>
+                        )}
+                        {deletionPlan.skippedLocked.length > 0 && (
+                            <div>
+                                <Text type='warning'>
+                                    {'Skipped (locked): '}
+                                    {deletionPlan.skippedLocked.map((item) => item.key).join(', ')}
+                                </Text>
+                            </div>
+                        )}
+                        {deletionPlan.error && (
+                            <Alert
+                                type={deletionPlan.exceedsHistoryLimit ? 'error' : 'info'}
+                                showIcon
+                                message={deletionPlan.error}
+                                style={{ marginTop: 8 }}
+                            />
                         )}
                     </div>
+                )}
+            </div>
+
+            {/* Mandatory confirmation for every deletion */}
+            {deletionPlan && deletionPlan.isValid && !isPlanning && (
+                <div className='cvat-annotation-deletion-section'>
+                    <Alert
+                        type='warning'
+                        showIcon
+                        message={`${deletionPlan.targets.length} object(s) will be changed. ` +
+                            'Annotations outside the frame range and locked objects are not affected.'}
+                        style={{ marginBottom: 8 }}
+                    />
+                    <Checkbox
+                        checked={confirmDelete}
+                        onChange={(e) => setConfirmDelete(e.target.checked)}
+                        className='cvat-annotation-deletion-confirm-checkbox'
+                        disabled={isDeleting}
+                    >
+                        {'I reviewed the preview and want to delete these '}
+                        {`${deletionPlan.targets.length} object(s)`}
+                    </Checkbox>
                 </div>
             )}
+
+            <div className='cvat-annotation-deletion-actions'>
+                <Button
+                    type='primary'
+                    danger
+                    icon={<DeleteOutlined />}
+                    loading={isDeleting}
+                    disabled={!canExecuteDelete}
+                    onClick={handleExecuteDelete}
+                    className='cvat-annotation-deletion-confirm-btn'
+                >
+                    {deletionPlan && deletionPlan.targets.length > 0 ?
+                        `Delete ${deletionPlan.targets.length} object(s)` : 'Delete'}
+                </Button>
+                {lastDeletion && (
+                    <Button
+                        icon={lastDeletion.undone ? <RedoOutlined /> : <UndoOutlined />}
+                        disabled={lastDeletion.undone ? !canRedoLastDeletion : !canUndoLastDeletion}
+                        onClick={lastDeletion.undone ? handleRedoLastDeletion : handleUndoLastDeletion}
+                        className='cvat-annotation-deletion-undo-btn'
+                        title={`${lastDeletion.undone ? 'Redo' : 'Undo'} the last deletion as one step ` +
+                            `(${lastDeletion.count} CVAT history steps): ${lastDeletion.description}`}
+                    >
+                        {lastDeletion.undone ? 'Redo deletion' : 'Undo deletion'}
+                    </Button>
+                )}
+            </div>
         </div>
     );
 }

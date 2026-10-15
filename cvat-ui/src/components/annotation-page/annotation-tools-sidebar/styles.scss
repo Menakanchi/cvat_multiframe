@@ -1,0 +1,70 @@
+// Copyright (C) CVAT.ai Corporation
+//
+// SPDX-License-Identifier: MIT
+
+@import 'base';
+
+.cvat-annotation-tools-sidebar {
+    position: relative;
+    flex: 0 0 auto;
+    height: 100%;
+    background: $background-color-2;
+    border-left: 1px solid $border-color-1;
+    transition: width 0.2s;
+
+    &.cvat-annotation-tools-sidebar-collapsed {
+        border-left: none;
+
+        > .cvat-annotation-tools-sidebar-content {
+            visibility: hidden;
+        }
+    }
+}
+
+// Pull-out tab on the left edge of the sidebar, styled like the objects sidebar collapser.
+// Placed below that collapser so the two tabs never overlap.
+.cvat-annotation-tools-sider {
+    position: absolute;
+    top: 48px;
+    right: 100%;
+    z-index: 3;
+    padding: 8px;
+    background: white;
+    border: 1px solid $border-color-1;
+    border-right: none;
+    border-radius: $border-radius-base 0 0 $border-radius-base;
+    cursor: pointer;
+    transition: box-shadow 0.5s;
+
+    &:hover {
+        box-shadow: $box-shadow-base;
+    }
+}
+
+.cvat-annotation-tools-sidebar-content {
+    height: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+// Card tabs like the objects sidebar (Objects / Labels / Issues)
+.cvat-annotation-tools-sidebar-tabs.ant-tabs {
+    flex-grow: 1;
+    height: 0;
+    padding-top: $grid-unit-size;
+
+    > .ant-tabs-nav {
+        margin-bottom: 0;
+        padding-left: $grid-unit-size;
+
+        div[role="tab"] {
+            color: $text-color;
+        }
+    }
+
+    > .ant-tabs-content-holder {
+        overflow: hidden auto;
+        background: $background-color-2;
+    }
+}

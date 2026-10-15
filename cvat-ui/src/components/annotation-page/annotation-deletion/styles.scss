@@ -4,56 +4,8 @@
 
 @import 'base';
 
-.cvat-annotation-deletion-panel {
-    position: relative;
-    flex: 0 0 auto;
-    height: 100%;
-    background: $background-color-2;
-    border-left: 1px solid $border-color-1;
-    transition: width 0.2s;
-
-    &.cvat-annotation-deletion-panel-collapsed {
-        border-left: none;
-    }
-}
-
-// Pull-out tab on the left edge of the panel, styled like the objects sidebar collapser.
-// Placed below that collapser so the two tabs never overlap.
-.cvat-annotation-deletion-sider {
-    position: absolute;
-    top: 48px;
-    right: 100%;
-    z-index: 3;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 8px;
-    background: white;
-    border: 1px solid $border-color-1;
-    border-right: none;
-    border-radius: $border-radius-base 0 0 $border-radius-base;
-    cursor: pointer;
-    transition: box-shadow 0.5s;
-
-    &:hover {
-        box-shadow: $box-shadow-base;
-    }
-
-    .cvat-annotation-deletion-sider-icon {
-        color: #ff4d4f;
-    }
-}
-
 .cvat-annotation-deletion-content {
-    height: 100%;
-    overflow: hidden auto;
     padding: $grid-unit-size * 2;
-}
-
-.cvat-annotation-deletion-title {
-    display: block;
-    font-size: 16px;
-    margin-bottom: $grid-unit-size * 2;
 }
 
 .cvat-annotation-deletion-section {

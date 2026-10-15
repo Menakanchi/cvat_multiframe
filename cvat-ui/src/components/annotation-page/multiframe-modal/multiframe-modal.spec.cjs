@@ -5425,8 +5425,8 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         'autoFollowEnabled must be passed down to MultiframeTile'
     );
     assert.ok(
-        stylesSource.includes('.cvat-multiframe-autofollow-checkbox'),
-        'Auto-Follow checkbox must be styled in styles.scss'
+        workspaceSource.includes("className='cvat-multiframe-autofollow-checkbox'"),
+        'Auto-Follow checkbox is shown in the Multi-Frame controls'
     );
 
     // 2. centerViewportOnObject: Preserves zoom level, aspect ratio, centers on object, clamps to boundaries
@@ -6099,28 +6099,51 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         !workspaceSource.includes('planAnnotationDeletion') && !workspaceSource.includes('cvat-multiframe-delete-btn'),
         'Multi-Frame workspace no longer contains the deletion feature',
     );
+    // Right tools sidebar: tab 1 Multi-Frame, tab 2 Delete
+    const toolsSidebarSource = fs.readFileSync(
+        path.resolve(__dirname, '../annotation-tools-sidebar/annotation-tools-sidebar.tsx'), 'utf8',
+    );
+    const sidebarTabSource = fs.readFileSync(path.resolve(__dirname, 'multiframe-sidebar-tab.tsx'), 'utf8');
+    const annotationPageSource = fs.readFileSync(path.resolve(__dirname, '../annotation-page.tsx'), 'utf8');
     assert.ok(
-        standardWorkspaceSource.includes('<AnnotationDeletionPanel />') &&
-        standardWorkspaceSource.indexOf('<AnnotationDeletionPanel />') <
+        standardWorkspaceSource.includes('<AnnotationToolsSidebar />') &&
+        standardWorkspaceSource.indexOf('<AnnotationToolsSidebar />') <
             standardWorkspaceSource.indexOf('<ObjectSideBarComponent'),
-        'Delete Annotations panel is mounted on the right side, next to the objects sidebar',
+        'Tools sidebar is mounted on the right side, next to the objects sidebar',
     );
     assert.ok(
-        panelSource.includes("className='cvat-annotation-deletion-sider'") &&
-        panelSource.includes('onClick={toggleCollapsed}') &&
-        panelSource.includes('useState<boolean>(true)'),
-        'Panel has a pull-out tab and starts collapsed',
+        toolsSidebarSource.indexOf("key: 'multiframe'") > 0 &&
+        toolsSidebarSource.indexOf("key: 'multiframe'") < toolsSidebarSource.indexOf("key: 'delete'") &&
+        toolsSidebarSource.includes("type='card'"),
+        'Tools sidebar has card tabs: Multi-Frame first, Delete second',
     );
     assert.ok(
-        !panelSource.includes('MenuFoldOutlined') &&
-        panelSource.includes("<DeleteOutlined className='cvat-annotation-deletion-sider-icon' />"),
-        'The pull-out tab shows only the trash icon',
+        toolsSidebarSource.includes("className='cvat-annotation-tools-sider'") &&
+        toolsSidebarSource.includes('onClick={() => setSidebarCollapsed(!collapsed)}') &&
+        toolsSidebarSource.includes('useState<boolean>(true)'),
+        'Sidebar has a pull-out tab and starts collapsed',
     );
     assert.ok(
-        panelSource.includes('if (collapsed && !objectsSidebarCollapsed) {') &&
-        panelSource.includes('dispatch(collapseSidebar());') &&
-        panelSource.includes('if (prevObjectsSidebarCollapsed.current && !objectsSidebarCollapsed) {'),
-        'Only one right sidebar is open at a time (deletion panel / objects sidebar)',
+        toolsSidebarSource.includes('if (!value && !objectsSidebarCollapsed) {') &&
+        toolsSidebarSource.includes('dispatch(collapseSidebar());') &&
+        toolsSidebarSource.includes('if (prevObjectsSidebarCollapsed.current && !objectsSidebarCollapsed) {'),
+        'Only one right sidebar is open at a time (tools sidebar / objects sidebar)',
+    );
+    assert.ok(
+        toolsSidebarSource.includes("setActiveTab('multiframe');") &&
+        toolsSidebarSource.includes('dispatch(switchShowMultiframeModal(false));') &&
+        !annotationPageSource.includes('<MultiframeModal />'),
+        'The Multi-Frame button / shortcut opens the Multi-Frame tab instead of a modal',
+    );
+    assert.ok(
+        sidebarTabSource.includes('dispatch(activateMultiframeWorkspace(true, startFrame, endFrame, frameCount));') &&
+        sidebarTabSource.includes('id={MULTIFRAME_SIDEBAR_CONTROLS_ID}') &&
+        workspaceSource.includes('createPortal(controls, controlsTarget)'),
+        'Multi-Frame is opened from the sidebar and its controls are rendered in the sidebar',
+    );
+    assert.ok(
+        panelSource.includes('if (!active || !rangeValidation.isValid'),
+        'Deletion preview is computed only while the Delete tab is shown',
     );
     assert.ok(
         panelSource.includes('planAnnotationDeletion(') && panelSource.includes('executeAnnotationDeletion('),

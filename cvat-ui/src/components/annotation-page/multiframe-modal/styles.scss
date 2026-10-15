@@ -2,37 +2,6 @@
 //
 // SPDX-License-Identifier: MIT
 
-.cvat-multiframe-config-modal {
-    .ant-modal-content {
-        padding: 20px 24px;
-        border-radius: 8px;
-    }
-
-    .ant-modal-body {
-        padding: 12px 0;
-    }
-}
-
-.cvat-multiframe-config-content {
-    padding: 4px 0;
-
-    .cvat-multiframe-config-divider {
-        border: 0;
-        border-top: 1px solid #3a3a3a;
-        margin: 16px 0;
-    }
-
-    .cvat-multiframe-count-slider-wrapper {
-        .ant-slider {
-            margin: 6px 6px 10px;
-        }
-    }
-
-    .cvat-multiframe-count-input {
-        width: 100%;
-    }
-}
-
 .cvat-multiframe-workspace-view {
     display: flex;
     flex-direction: column;
@@ -43,54 +12,49 @@
     overflow: hidden;
 }
 
-.cvat-multiframe-controls-bar {
+// Multi-Frame tab of the right tools sidebar: setup form (inactive) and workspace controls (active)
+.cvat-multiframe-setup-form,
+.cvat-multiframe-controls-panel {
     display: flex;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: 8px;
+    padding: 16px;
+}
+
+.cvat-multiframe-sidebar-row {
+    display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 8px;
-    padding: 4px 8px;
-    background: #2b2b2b;
-    border: 1px solid #3a3a3a;
-    border-radius: 4px;
-    margin-bottom: 6px;
+}
 
-    .ant-typography {
-        color: #e0e0e0;
+.cvat-multiframe-controls-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #d9d9d9;
+
+    &:last-child {
+        border-bottom: none;
     }
 }
 
-.cvat-multiframe-range-group {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+.cvat-multiframe-controls-title {
+    font-size: 13px;
 }
 
+.cvat-multiframe-range-group,
 .cvat-multiframe-batch-group {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
-}
-
-.cvat-multiframe-object-group {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-
-    .cvat-multiframe-autozoom-checkbox,
-    .cvat-multiframe-autofollow-checkbox {
-        color: #e0e0e0;
-        margin-left: 4px;
-    }
 }
 
 .cvat-multiframe-exit-group {
-    display: flex;
-    align-items: center;
-}
-
-.cvat-multiframe-exit-btn {
-    margin-left: 8px;
+    flex-direction: row;
+    flex-wrap: wrap;
 }
 
 .cvat-multiframe-grid {

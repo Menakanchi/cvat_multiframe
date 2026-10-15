@@ -5,6 +5,7 @@
 import React, {
     useCallback, useMemo, useEffect, useState, useRef,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { useDispatch, useSelector } from 'react-redux';
 import Button from 'antd/lib/button';
 import Text from 'antd/lib/typography/Text';
@@ -46,6 +47,7 @@ import {
     enterIDFilter,
 } from './multiframe-utils';
 import MultiframeTile from './multiframe-tile';
+import { MULTIFRAME_SIDEBAR_CONTROLS_ID } from './multiframe-sidebar-tab';
 
 const DEFAULT_BATCH_SIZE = 10;
 
@@ -132,6 +134,12 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const [zoomedFrame, setZoomedFrame] = useState<number | null>(null);
 
     const gridRef = useRef<HTMLDivElement | null>(null);
+
+    // Container in the right tools sidebar that receives the controls (rendered in the same commit)
+    const [controlsTarget, setControlsTarget] = useState<HTMLElement | null>(null);
+    useEffect(() => {
+        setControlsTarget(document.getElementById(MULTIFRAME_SIDEBAR_CONTROLS_ID));
+    }, []);
 
     // Fetch initial annotations for job
     useEffect(() => {
@@ -431,13 +439,13 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const batchIndicator = `Batch ${totalBatches === 0 ? 0 : batchIndex + 1} of ${Math.max(1, totalBatches)} ` +
         `(Frames #${batchStartFrame} - #${batchEndFrame})`;
 
-    return (
-        <div className={`cvat-multiframe-workspace-view ${zoomedFrame !== null ? 'cvat-multiframe-workspace-has-zoomed' : ''}`}>
-            {/* Header Controls Bar */}
-            <div className='cvat-multiframe-controls-bar'>
-                {/* Left: Range and Navigation */}
+    // Controls are shown in the Multi-Frame tab of the right tools sidebar (React portal)
+    const controls = (
+        <div className='cvat-multiframe-controls-panel'>
+            <div className='cvat-multiframe-controls-section'>
+                <Text strong className='cvat-multiframe-controls-title'>Frames</Text>
                 <div className='cvat-multiframe-range-group'>
-                    <Text strong>Range:</Text>
+                    <Text>Range</Text>
                     <InputNumber
                         size='small'
                         style={{ width: 85 }}
@@ -459,15 +467,9 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         onChange={(val: number | null) => setInputEnd(val)}
                         placeholder='End'
                     />
-                    <Button
-                        size='small'
-                        disabled={!validation.isValid || !hasValidFrames}
-                        onClick={onUpdateRange}
-                        className='cvat-multiframe-apply-range-btn'
-                    >
-                        Apply Range
-                    </Button>
-                    <Text strong style={{ marginLeft: 6 }}>Count:</Text>
+                </div>
+                <div className='cvat-multiframe-range-group'>
+                    <Text>Count</Text>
                     <InputNumber
                         size='small'
                         style={{ width: 60 }}
@@ -483,9 +485,30 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         placeholder='Count'
                         className='cvat-multiframe-count-quick-input'
                     />
+                    <Button
+                        size='small'
+                        disabled={!validation.isValid || !hasValidFrames}
+                        onClick={onUpdateRange}
+                        className='cvat-multiframe-apply-range-btn'
+                    >
+                        Apply Range
+                    </Button>
                 </div>
+                {!validation.isValid && validation.error && (
+                    <Alert
+                        type='error'
+                        showIcon
+                        message={validation.error}
+                        className='cvat-multiframe-error-alert'
+                    />
+                )}
+            </div>
 
-                {/* Center: Batch Navigation */}
+            <div className='cvat-multiframe-controls-section'>
+                <Text strong className='cvat-multiframe-controls-title'>Batch</Text>
+                <Text className='cvat-multiframe-batch-indicator'>
+                    {batchIndicator}
+                </Text>
                 <div className='cvat-multiframe-batch-group'>
                     <Button
                         size='small'
@@ -496,9 +519,6 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     >
                         Prev Batch
                     </Button>
-                    <Text strong className='cvat-multiframe-batch-indicator'>
-                        {batchIndicator}
-                    </Text>
                     <Button
                         size='small'
                         icon={<RightOutlined />}
@@ -509,15 +529,17 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         Next Batch
                     </Button>
                 </div>
+            </div>
 
-                {/* Object Selector & Auto-Zoom Controls */}
-                <div className='cvat-multiframe-object-group'>
-                    <Text strong>Type:</Text>
+            <div className='cvat-multiframe-controls-section cvat-multiframe-object-group'>
+                <Text strong className='cvat-multiframe-controls-title'>Object</Text>
+                <div className='cvat-multiframe-range-group'>
+                    <Text>Type</Text>
                     <Select
                         size='small'
                         value={selectedLabelFilter}
                         onChange={(val: string) => applyObjectFilter(selectTypeFilter(val))}
-                        style={{ width: 130 }}
+                        style={{ flex: 1 }}
                         className={`cvat-multiframe-type-select ${
                             objectFilter.mode === 'type' ? 'cvat-multiframe-filter-active' : ''}`}
                         showSearch
@@ -529,25 +551,19 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                             </Select.Option>
                         ))}
                     </Select>
-
-                    <Text type='secondary'>or</Text>
-                    <Text strong>Object ID:</Text>
+                </div>
+                <div className='cvat-multiframe-range-group'>
+                    <Text>ID</Text>
                     <Input
                         size='small'
                         placeholder='ID, track_N, id:N'
                         value={inputObjectID}
                         onChange={(e) => applyObjectFilter(enterIDFilter(e.target.value))}
                         allowClear
-                        style={{ width: 120 }}
+                        style={{ flex: 1 }}
                         className={`cvat-multiframe-object-id-input ${
                             objectFilter.mode === 'id' ? 'cvat-multiframe-filter-active' : ''}`}
                     />
-                    <Tag
-                        color={FILTER_MODE_COLORS[objectFilter.mode]}
-                        className='cvat-multiframe-filter-mode-tag'
-                    >
-                        {describeObjectFilter(objectFilter)}
-                    </Tag>
                     <Button
                         size='small'
                         onClick={() => applyObjectFilter(EMPTY_OBJECT_FILTER)}
@@ -557,6 +573,14 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     >
                         Clear
                     </Button>
+                </div>
+                <div className='cvat-multiframe-range-group'>
+                    <Tag
+                        color={FILTER_MODE_COLORS[objectFilter.mode]}
+                        className='cvat-multiframe-filter-mode-tag'
+                    >
+                        {describeObjectFilter(objectFilter)}
+                    </Tag>
                     {Boolean(inputObjectID.trim()) && (
                         <Tag
                             color={idResolution.status === 'VALID' ? 'success' : 'error'}
@@ -566,7 +590,8 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                             {idResolution.message}
                         </Tag>
                     )}
-
+                </div>
+                <div className='cvat-multiframe-range-group'>
                     <Checkbox
                         checked={autoZoomEnabled}
                         onChange={(e) => setAutoZoomEnabled(e.target.checked)}
@@ -582,58 +607,50 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         Auto-Follow
                     </Checkbox>
                 </div>
-
-                {/* Right: Actions and Exit buttons */}
-                <div className='cvat-multiframe-exit-group'>
-                    {zoomedFrame !== null && (
-                        <Button
-                            size='small'
-                            type='primary'
-                            ghost
-                            icon={<AppstoreOutlined />}
-                            onClick={() => handleResetLayout()}
-                            className='cvat-multiframe-restore-grid-top-btn'
-                            style={{ marginRight: 8 }}
-                            title='Restore original grid layout'
-                        >
-                            Restore Grid
-                        </Button>
-                    )}
-                    <Button
-                        type='primary'
-                        size='small'
-                        icon={<SaveOutlined />}
-                        loading={isSaving}
-                        disabled={isSaving}
-                        onClick={() => dispatch(saveAnnotationsAsync())}
-                        className='cvat-multiframe-save-btn'
-                        style={{ marginRight: 8, background: '#1890ff', borderColor: '#1890ff' }}
-                    >
-                        {isSaving ? 'Saving...' : 'Save'}
-                    </Button>
-                    <Button
-                        type='primary'
-                        danger
-                        size='small'
-                        icon={<CloseOutlined />}
-                        onClick={onClose}
-                        className='cvat-multiframe-exit-btn'
-                    >
-                        Exit Multi-Frame
-                    </Button>
-                </div>
             </div>
 
-            {/* Validation warning if custom range is invalid */}
-            {!validation.isValid && validation.error && (
-                <Alert
-                    type='error'
-                    showIcon
-                    message={validation.error}
-                    style={{ marginBottom: 10 }}
-                    className='cvat-multiframe-error-alert'
-                />
-            )}
+            <div className='cvat-multiframe-controls-section cvat-multiframe-exit-group'>
+                {zoomedFrame !== null && (
+                    <Button
+                        size='small'
+                        type='primary'
+                        ghost
+                        icon={<AppstoreOutlined />}
+                        onClick={() => handleResetLayout()}
+                        className='cvat-multiframe-restore-grid-top-btn'
+                        title='Restore original grid layout'
+                    >
+                        Restore Grid
+                    </Button>
+                )}
+                <Button
+                    type='primary'
+                    size='small'
+                    icon={<SaveOutlined />}
+                    loading={isSaving}
+                    disabled={isSaving}
+                    onClick={() => dispatch(saveAnnotationsAsync())}
+                    className='cvat-multiframe-save-btn'
+                >
+                    {isSaving ? 'Saving...' : 'Save'}
+                </Button>
+                <Button
+                    type='primary'
+                    danger
+                    size='small'
+                    icon={<CloseOutlined />}
+                    onClick={onClose}
+                    className='cvat-multiframe-exit-btn'
+                >
+                    Exit Multi-Frame
+                </Button>
+            </div>
+        </div>
+    );
+
+    return (
+        <div className={`cvat-multiframe-workspace-view ${zoomedFrame !== null ? 'cvat-multiframe-workspace-has-zoomed' : ''}`}>
+            {controlsTarget ? createPortal(controls, controlsTarget) : controls}
 
             {/* Multi-Frame Grid of Tiles or Loading State */}
             {!hasValidFrames && (
