@@ -6156,12 +6156,25 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         'Deletion uses a dry-run plan and executes the same plan',
     );
     assert.ok(
-        panelSource.includes("className='cvat-annotation-deletion-preview-list'"),
-        'Preview lists target objects',
+        !panelSource.includes('cvat-annotation-deletion-preview-list') &&
+        panelSource.includes('object(s) will be deleted'),
+        'The long preview is replaced by a one-line summary',
     );
     assert.ok(
-        panelSource.includes('deletionPlan.isValid && confirmDelete'),
+        panelSource.includes('<Popconfirm') && panelSource.includes('onConfirm={handleExecuteDelete}'),
         'Confirmation is mandatory for every deletion',
+    );
+    assert.ok(
+        panelSource.includes("resolveObjectByIDAndType(idInput, 'all', jobObjects)") &&
+        panelSource.includes("message: 'Object ID not found'") &&
+        panelSource.includes('onBlur={notifyInvalidID}'),
+        'The entered ID is validated against the whole job and a missing ID is notified',
+    );
+    assert.ok(
+        panelSource.includes('onClick={() => stepToID(nextID)}') &&
+        panelSource.includes('onClick={() => stepToID(prevID)}') &&
+        panelSource.includes('sortedIDs.find((id) => selectedID === null || id > selectedID)'),
+        'Up / down buttons step to the next / previous existing object ID of the job',
     );
     assert.ok(
         panelSource.includes('jobInstance.actions.undo(lastDeletion.count)') &&
@@ -6229,8 +6242,8 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     );
     assert.ok(panel.includes('setFilter(selectTypeFilter(val))') &&
         panel.includes('setFilter(enterIDFilter(e.target.value))'), 'Deletion panel switches modes');
-    assert.ok(panel.includes("resolveObjectByIDAndType(idInput, 'all', rangeStates)"),
-        'Deletion ID is resolved without the type, across the whole frame range');
+    assert.ok(panel.includes("resolveObjectByIDAndType(idInput, 'all', jobObjects)"),
+        'Deletion ID is resolved without the type, across the whole job');
 
     // tiles: read-only display of the type matches and a clear indicator for frames without matches
     assert.ok(tile.includes('getTypeFilterMatches(frameStates, typeFilterLabel)'), 'Tile computes type matches');

@@ -23,39 +23,18 @@
     gap: $grid-unit-size;
 }
 
-.cvat-annotation-deletion-id-status {
-    margin-top: $grid-unit-size;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.cvat-annotation-deletion-preview-card {
-    background: white;
-    border: 1px solid $border-color-1;
-    border-radius: $border-radius-base;
-    padding: 10px 12px;
-    margin-bottom: $grid-unit-size * 2;
-}
-
-.cvat-annotation-deletion-preview-title {
-    display: block;
-    color: #d48806;
-    margin-bottom: 4px;
-}
-
-.cvat-annotation-deletion-preview-list {
-    max-height: 220px;
-    overflow-y: auto;
-    margin: 6px 0 0;
-    padding-left: 18px;
-    font-family: monospace;
-    font-size: 11px;
-}
-
 .cvat-annotation-deletion-actions {
     display: flex;
     flex-wrap: wrap;
     gap: $grid-unit-size;
+}
+
+.cvat-annotation-deletion-id-status {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+}
+
+.cvat-annotation-deletion-summary {
+    display: block;
 }
