@@ -6069,7 +6069,13 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     assert.ok(
         !workspaceSource.includes('canResize=') &&
         workspaceSource.includes('isEditable={!isOtherExpanded}'),
-        'Other tiles stay visible but are not editable while a frame is zoomed',
+        'Other tiles are not editable while a frame is zoomed',
+    );
+    assert.ok(
+        workspaceSource.includes("} else if (isAnyZoomed) {") &&
+        workspaceSource.includes("tileStyle = { display: 'none' };") &&
+        workspaceSource.includes("'cvat-multiframe-grid-has-zoomed'"),
+        'A double-clicked frame fills the workspace; other tiles are hidden (kept mounted)',
     );
 
     // Type / Object ID controls

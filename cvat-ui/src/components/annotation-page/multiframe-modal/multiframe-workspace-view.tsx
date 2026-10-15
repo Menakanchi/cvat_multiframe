@@ -669,7 +669,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
             {hasValidFrames && batchFrames.length > 0 && (
                 <div
                     ref={setGridRef}
-                    className='cvat-multiframe-grid'
+                    className={`cvat-multiframe-grid ${zoomedFrame !== null ? 'cvat-multiframe-grid-has-zoomed' : ''}`}
                     style={{
                         position: 'relative',
                         gridTemplateColumns: batchFrames.length < 4 ?
@@ -705,6 +705,9 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                                 minHeight: '520px',
                                 zIndex: 10,
                             };
+                        } else if (isAnyZoomed) {
+                            // The zoomed frame fills the workspace: other tiles stay mounted but hidden
+                            tileStyle = { display: 'none' };
                         }
 
                         return (

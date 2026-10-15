@@ -69,6 +69,11 @@
     padding: 2px;
     min-height: 0;
 
+    // Only the zoomed frame is shown, centered in the workspace
+    &.cvat-multiframe-grid-has-zoomed {
+        align-content: center;
+    }
+
     @media (max-width: 1200px) {
         grid-template-columns: repeat(3, 1fr);
     }
