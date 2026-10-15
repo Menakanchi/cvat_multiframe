@@ -849,4 +849,25 @@ await test('Multi-Frame setup: window of N frames from a start frame', async () 
     assert.deepEqual(U.getFrameWindow(0, 10, sparse), [0, 20], 'never more frames than the job has');
 });
 
+await test('Multi-Frame grid: rows / columns chosen for the largest equal cells', async () => {
+    // wide workspace, square frames
+    const two = U.calculateGridLayout(2, 1400, 860, 1, 6);
+    assert.equal(two.rows, 1, '2 frames side by side');
+    assert.equal(two.columns, 2);
+    assert.equal(two.cellWidth, two.cellHeight, 'square frames give square cells');
+    const ten = U.calculateGridLayout(10, 1400, 860, 1, 6);
+    assert.deepEqual([ten.rows, ten.columns], [2, 5]);
+    // cells always fit the workspace
+    for (const layout of [two, ten]) {
+        assert.ok(layout.columns * layout.cellWidth + 6 * (layout.columns - 1) <= 1400);
+        assert.ok(layout.rows * layout.cellHeight + 6 * (layout.rows - 1) <= 860);
+    }
+    // tall workspace: frames are stacked
+    const seven = U.calculateGridLayout(7, 1400, 860, 1, 6);
+    assert.deepEqual([seven.rows, seven.columns], [2, 4], '7 frames -> 4 + 3 (much larger than one row)');
+    assert.equal(U.calculateGridLayout(2, 500, 1200, 1, 6).rows, 2);
+    // unknown size
+    assert.equal(U.calculateGridLayout(4, 0, 0, 1).cellWidth, 0);
+});
+
 console.log(`\n=== ${passed} actual-implementation tests passed ===`);

@@ -6078,10 +6078,9 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         'A double-clicked frame fills the workspace; other tiles are hidden (kept mounted)',
     );
     assert.ok(
-        workspaceSource.includes('const gridRows = batchFrames.length > 1 ? 2 : 1;') &&
-        workspaceSource.includes('let cellHeight = cellWidth / frameAspect;') &&
+        workspaceSource.includes('calculateGridLayout(batchFrames.length, gridDimensions.width') &&
         workspaceSource.includes('`repeat(${gridColumns}, ${cellWidth}px)`'),
-        'Grid is laid out evenly in 2 rows of equal cells with the frame aspect ratio',
+        'Grid uses equal cells with the frame aspect ratio and the rows / columns giving the largest cells',
     );
 
     // Type / Object ID controls

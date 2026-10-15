@@ -220,6 +220,60 @@ export function shiftFrameWindow(
     return [frames[newStartIdx], frames[Math.min(frames.length - 1, newStartIdx + size - 1)]];
 }
 
+export interface GridLayout {
+    rows: number;
+    columns: number;
+    cellWidth: number;
+    cellHeight: number;
+}
+
+/**
+ * Even grid for `count` frames inside the container: tries every number of rows and keeps the one
+ * with the largest cells (cells keep the frame aspect ratio), e.g. 2 frames on a wide screen -> 1 row,
+ * 10 frames -> 2 rows of 5.
+ */
+export function calculateGridLayout(
+    count: number,
+    containerWidth: number,
+    containerHeight: number,
+    frameAspect: number,
+    gap = 0,
+): GridLayout {
+    const empty = {
+        rows: 1, columns: Math.max(1, count), cellWidth: 0, cellHeight: 0,
+    };
+    if (count <= 0 || containerWidth <= 0 || containerHeight <= 0 || !(frameAspect > 0)) return empty;
+
+    // Full grids (every row complete) are preferred: an incomplete last row is used only when
+    // its cells are clearly (more than 10%) larger, e.g. 7 frames -> 4 + 3 instead of a single row
+    let bestFull = empty;
+    let bestAny = empty;
+    for (let rows = 1; rows <= count; rows++) {
+        const columns = Math.ceil(count / rows);
+        // skip layouts that leave a whole row empty
+        if (Math.ceil(count / columns) === rows) {
+            let cellWidth = (containerWidth - gap * (columns - 1)) / columns;
+            let cellHeight = cellWidth / frameAspect;
+            const maxCellHeight = (containerHeight - gap * (rows - 1)) / rows;
+            if (cellHeight > maxCellHeight) {
+                cellHeight = maxCellHeight;
+                cellWidth = cellHeight * frameAspect;
+            }
+            cellWidth = Math.floor(cellWidth);
+            cellHeight = Math.floor(cellHeight);
+            const layout = {
+                rows, columns, cellWidth, cellHeight,
+            };
+            if (cellWidth > 0 && cellHeight > 0) {
+                if (cellWidth > bestAny.cellWidth) bestAny = layout;
+                if (count % columns === 0 && cellWidth > bestFull.cellWidth) bestFull = layout;
+            }
+        }
+    }
+    const best = bestAny.cellWidth > bestFull.cellWidth * 1.1 ? bestAny : bestFull;
+    return best;
+}
+
 export function getTotalBatches(
     rangeStart: number,
     rangeEnd: number,

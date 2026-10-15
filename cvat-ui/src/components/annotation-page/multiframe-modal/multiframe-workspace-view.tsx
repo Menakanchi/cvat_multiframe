@@ -41,6 +41,7 @@ import {
     extractSelectableObjects,
     SelectableObject,
     calculateExpandedFitDimensions,
+    calculateGridLayout,
     resolveObjectByIDAndType,
     getObjectInputKey,
     EMPTY_OBJECT_FILTER,
@@ -437,22 +438,14 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         applyObjectFilter(enterIDFilter(getObjectInputKey(parentObject)));
     }, [combinedStates, applyObjectFilter]);
 
-    // Even grid: 2 rows, equal cells with the frame aspect ratio, as large as the workspace allows
-    const gridRows = batchFrames.length > 1 ? 2 : 1;
-    const gridColumns = Math.max(1, Math.ceil(batchFrames.length / gridRows));
+    // Even grid of equal cells with the frame aspect ratio; rows / columns chosen for the largest cells
     const referenceSize = batchFrames
         .map((frame) => frameRenderSizes[frame])
         .find((size) => size && size.width > 0 && size.height > 0);
     const frameAspect = referenceSize ? referenceSize.width / referenceSize.height : 1;
-    let cellWidth = (gridDimensions.width - GRID_GAP * (gridColumns - 1)) / gridColumns;
-    let cellHeight = cellWidth / frameAspect;
-    const maxCellHeight = (gridDimensions.height - GRID_GAP * (gridRows - 1)) / gridRows;
-    if (cellHeight > maxCellHeight) {
-        cellHeight = maxCellHeight;
-        cellWidth = cellHeight * frameAspect;
-    }
-    cellWidth = Math.floor(cellWidth);
-    cellHeight = Math.floor(cellHeight);
+    const {
+        columns: gridColumns, cellWidth, cellHeight,
+    } = calculateGridLayout(batchFrames.length, gridDimensions.width, gridDimensions.height, frameAspect, GRID_GAP);
     const hasCellSize = cellWidth > 0 && cellHeight > 0 && zoomedFrame === null;
 
     const batchIndicator = batchFrames.length > 0 ?
