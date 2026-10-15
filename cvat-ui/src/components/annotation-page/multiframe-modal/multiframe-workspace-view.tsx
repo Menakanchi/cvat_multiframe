@@ -67,6 +67,8 @@ function describeObjectFilter(filter: ObjectFilterState): string {
 const ZOOMED_TILE_CHROME = 5;
 // Grid padding (2px on each side), see styles.scss
 const GRID_PADDING = 4;
+// Gap between grid cells, see styles.scss
+const GRID_GAP = 6;
 
 interface Props {
     onClose(): void;
@@ -435,6 +437,24 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         applyObjectFilter(enterIDFilter(getObjectInputKey(parentObject)));
     }, [combinedStates, applyObjectFilter]);
 
+    // Even grid: 2 rows, equal cells with the frame aspect ratio, as large as the workspace allows
+    const gridRows = batchFrames.length > 1 ? 2 : 1;
+    const gridColumns = Math.max(1, Math.ceil(batchFrames.length / gridRows));
+    const referenceSize = batchFrames
+        .map((frame) => frameRenderSizes[frame])
+        .find((size) => size && size.width > 0 && size.height > 0);
+    const frameAspect = referenceSize ? referenceSize.width / referenceSize.height : 1;
+    let cellWidth = (gridDimensions.width - GRID_GAP * (gridColumns - 1)) / gridColumns;
+    let cellHeight = cellWidth / frameAspect;
+    const maxCellHeight = (gridDimensions.height - GRID_GAP * (gridRows - 1)) / gridRows;
+    if (cellHeight > maxCellHeight) {
+        cellHeight = maxCellHeight;
+        cellWidth = cellHeight * frameAspect;
+    }
+    cellWidth = Math.floor(cellWidth);
+    cellHeight = Math.floor(cellHeight);
+    const hasCellSize = cellWidth > 0 && cellHeight > 0 && zoomedFrame === null;
+
     const batchIndicator = batchFrames.length > 0 ?
         `Frames #${batchFrames[0]} - #${batchFrames[batchFrames.length - 1]} ` +
         `(${batchFrames.length} of max ${MAX_MULTIFRAME_FRAMES})` : 'No frames';
@@ -658,8 +678,11 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     className={`cvat-multiframe-grid ${zoomedFrame !== null ? 'cvat-multiframe-grid-has-zoomed' : ''}`}
                     style={{
                         position: 'relative',
-                        gridTemplateColumns: batchFrames.length < 4 ?
-                            `repeat(${Math.max(1, batchFrames.length)}, 1fr)` : undefined,
+                        gridTemplateColumns: hasCellSize ?
+                            `repeat(${gridColumns}, ${cellWidth}px)` : `repeat(${gridColumns}, 1fr)`,
+                        gridAutoRows: hasCellSize ? `${cellHeight}px` : undefined,
+                        justifyContent: 'center',
+                        alignContent: 'center',
                     }}
                 >
                     {batchFrames.map((frame) => {
@@ -694,17 +717,9 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         } else if (isAnyZoomed) {
                             // The zoomed frame fills the workspace: other tiles stay mounted but hidden
                             tileStyle = { display: 'none' };
-                        } else {
-                            // Grid tile takes the frame aspect ratio (square frame -> square tile), no letterbox bars
-                            const renderSize = frameRenderSizes[frame];
-                            if (renderSize && renderSize.width > 0 && renderSize.height > 0) {
-                                tileStyle = {
-                                    aspectRatio: `${renderSize.width} / ${renderSize.height}`,
-                                    height: 'auto',
-                                    minHeight: 0,
-                                    alignSelf: 'start',
-                                };
-                            }
+                        } else if (hasCellSize) {
+                            // Every tile fills its equal cell, which has the frame aspect ratio (no letterbox bars)
+                            tileStyle = { width: '100%', height: '100%', minHeight: 0 };
                         }
 
                         return (
