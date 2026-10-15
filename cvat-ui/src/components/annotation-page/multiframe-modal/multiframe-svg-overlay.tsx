@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
-import { Viewport, parseBBox, resolveSkeletonWrappingBox } from './multiframe-utils';
+import {
+    Viewport, BBox, parseBBox, resolveSkeletonWrappingBox,
+} from './multiframe-utils';
 
 interface Props {
     width: number;
@@ -22,11 +24,6 @@ interface Props {
     onEditShape?(shapeState: any, newPoints: number[]): void;
     onEditSkeleton?(parentState: any, dx: number, dy: number): void;
     onAutoFollow?(objectCenterX: number, objectCenterY: number): void;
-}
-
-interface SkeletonEdge {
-    from: number;
-    to: number;
 }
 
 interface DragState {

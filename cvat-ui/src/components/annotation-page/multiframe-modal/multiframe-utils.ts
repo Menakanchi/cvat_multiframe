@@ -1145,3 +1145,663 @@ export function calculateOtherTileOpacity(
         isHidden: false,
     };
 }
+
+// ---------------------------------------------------------------------------
+// Expanded-frame (Zoom in place) fitting
+// ---------------------------------------------------------------------------
+
+export interface ExpandedFitResult {
+    isValid: boolean;
+    width: number;
+    height: number;
+}
+
+/**
+ * Calculates the outer size of an expanded (zoomed in place) tile so that its image area keeps the
+ * displayed frame aspect ratio and fits inside the available grid area.
+ * - contentWidth/contentHeight must be the actual displayed frame (or viewport) dimensions.
+ * - chrome is the extra outer size of the tile (e.g. borders) added on both axes.
+ * - Returns isValid=false (and zero size) when the container or the content is not measurable yet,
+ *   so callers can fall back to the default layout instead of applying a wrong size.
+ */
+export function calculateExpandedFitDimensions(
+    containerWidth: number,
+    containerHeight: number,
+    contentWidth: number,
+    contentHeight: number,
+    chrome = 0,
+): ExpandedFitResult {
+    const invalid = { isValid: false, width: 0, height: 0 };
+    const values = [containerWidth, containerHeight, contentWidth, contentHeight, chrome];
+    if (values.some((value) => typeof value !== 'number' || !Number.isFinite(value))) {
+        return invalid;
+    }
+
+    const safeChrome = Math.max(0, chrome);
+    const availWidth = Math.floor(containerWidth - safeChrome);
+    const availHeight = Math.floor(containerHeight - safeChrome);
+    if (availWidth <= 0 || availHeight <= 0 || contentWidth <= 0 || contentHeight <= 0) {
+        return invalid;
+    }
+
+    const aspect = contentWidth / contentHeight;
+    let fitWidth = availWidth;
+    let fitHeight = fitWidth / aspect;
+    if (fitHeight > availHeight) {
+        fitHeight = availHeight;
+        fitWidth = fitHeight * aspect;
+    }
+
+    // Floor so that the result never exceeds the available area
+    const width = Math.max(1, Math.floor(fitWidth));
+    const height = Math.max(1, Math.floor(fitHeight));
+
+    return {
+        isValid: true,
+        width: width + safeChrome,
+        height: height + safeChrome,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Object ID parsing and resolution
+// ---------------------------------------------------------------------------
+
+export type ObjectIDScope = 'any' | 'client' | 'server';
+
+export interface ParsedObjectID {
+    status: 'EMPTY' | 'INVALID' | 'OK';
+    id: number | null;
+    scope: ObjectIDScope;
+    objectType: 'shape' | 'track' | null;
+}
+
+const OBJECT_ID_PATTERN = /^#?\s*(?:(track|shape)_|(id|sid|server)\s*[:#]\s*)?(\d+)$/i;
+
+/**
+ * Strictly parses an Object ID entered by a user.
+ * Accepted forms (whitespace around the value is ignored):
+ *  - "12" or "#12": a client ID or a server ID (may be ambiguous)
+ *  - "track_12" / "shape_12": a client ID of a track / shape (unambiguous)
+ *  - "id:12" / "sid:12" / "server:12": a server ID (unambiguous)
+ * Anything else ("12abc", "10.7", "1e1", "-3", "") is rejected.
+ */
+export function parseObjectIDInput(rawInput: string | number | null | undefined): ParsedObjectID {
+    if (rawInput === null || rawInput === undefined) {
+        return { status: 'EMPTY', id: null, scope: 'any', objectType: null };
+    }
+
+    const input = String(rawInput).trim();
+    if (!input) {
+        return { status: 'EMPTY', id: null, scope: 'any', objectType: null };
+    }
+
+    const match = OBJECT_ID_PATTERN.exec(input);
+    if (!match) {
+        return { status: 'INVALID', id: null, scope: 'any', objectType: null };
+    }
+
+    const id = Number(match[3]);
+    if (!Number.isSafeInteger(id)) {
+        return { status: 'INVALID', id: null, scope: 'any', objectType: null };
+    }
+
+    if (match[1]) {
+        return {
+            status: 'OK', id, scope: 'client', objectType: match[1].toLowerCase() as 'shape' | 'track',
+        };
+    }
+
+    if (match[2]) {
+        return { status: 'OK', id, scope: 'server', objectType: null };
+    }
+
+    return { status: 'OK', id, scope: 'any', objectType: null };
+}
+
+/** Returns an unambiguous input key for an object state, e.g. "track_12" */
+export function getObjectInputKey(state: any): string {
+    return state?.objectType === 'track' ? `track_${state.clientID}` : `shape_${state.clientID}`;
+}
+
+export type ObjectResolutionStatus = 'EMPTY' | 'INVALID' | 'VALID' | 'NOT_FOUND' | 'TYPE_MISMATCH' | 'AMBIGUOUS';
+
+export interface ObjectResolutionResult {
+    status: ObjectResolutionStatus;
+    matchedObject: any | null;
+    matchedKey: string | null;
+    resolvedType: string | null;
+    resolvedID: number | null;
+    isSkeleton: boolean;
+    candidates: any[];
+    message: string;
+}
+
+function isValidState(state: any): boolean {
+    return Boolean(state) && !state.removed;
+}
+
+function hasParent(state: any): boolean {
+    return state?.parentID !== null && state?.parentID !== undefined;
+}
+
+function capitalize(value: string): string {
+    return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
+}
+
+/**
+ * Resolves an entered Object ID to a single top-level annotation object.
+ * - A Skeleton landmark ID always resolves to its parent Skeleton (landmarks are never independent objects).
+ * - Plain numbers can match both client IDs and server IDs; if they identify different objects,
+ *   the result is AMBIGUOUS and nothing is selected.
+ * - The type filter narrows candidates before ambiguity is evaluated.
+ */
+export function resolveObjectByIDAndType(
+    rawInputID: string | number | null | undefined,
+    typeFilter: string,
+    allStates: any[],
+): ObjectResolutionResult {
+    const base = {
+        matchedObject: null,
+        matchedKey: null,
+        resolvedType: null,
+        resolvedID: null,
+        isSkeleton: false,
+        candidates: [] as any[],
+    };
+
+    const parsed = parseObjectIDInput(rawInputID);
+    if (parsed.status === 'EMPTY') {
+        return { ...base, status: 'EMPTY', message: '' };
+    }
+
+    if (parsed.status === 'INVALID' || parsed.id === null) {
+        return {
+            ...base,
+            status: 'INVALID',
+            message: `Invalid ID "${String(rawInputID).trim()}". Use a number, track_N, shape_N or id:N`,
+        };
+    }
+
+    const { id, scope, objectType } = parsed;
+    const states = Array.isArray(allStates) ? allStates.filter(isValidState) : [];
+    const topLevel = states.filter((state) => !hasParent(state));
+
+    const matchesID = (state: any): boolean => {
+        if (!state) return false;
+        if (scope === 'client') return state.clientID === id;
+        if (scope === 'server') return state.serverID === id || state.id === id;
+        return state.clientID === id || state.serverID === id || state.id === id;
+    };
+
+    const findParent = (child: any): any | null => (
+        topLevel.find((state) => state.clientID === child.parentID) || null
+    );
+
+    // Collect distinct top-level candidates (keyed by object type + client ID)
+    const candidates = new Map<string, any>();
+    const addCandidate = (state: any | null): void => {
+        if (!state) return;
+        if (objectType && state.objectType !== objectType) return;
+        candidates.set(getObjectInputKey(state), state);
+    };
+
+    for (const state of topLevel) {
+        if (matchesID(state)) {
+            addCandidate(state);
+        }
+
+        if (Array.isArray(state.elements)) {
+            if (state.elements.some((element: any) => matchesID(element))) {
+                // landmark ID resolves to its complete parent skeleton
+                addCandidate(state);
+            }
+        }
+    }
+
+    for (const state of states) {
+        if (hasParent(state) && matchesID(state)) {
+            addCandidate(findParent(state));
+        }
+    }
+
+    const allCandidates = Array.from(candidates.values());
+    if (allCandidates.length === 0) {
+        return { ...base, status: 'NOT_FOUND', message: `Object ID ${id} not found` };
+    }
+
+    const typed = typeFilter && typeFilter !== 'all' ?
+        allCandidates.filter((state) => state.shapeType === typeFilter) : allCandidates;
+
+    if (typed.length === 0) {
+        const types = Array.from(new Set(allCandidates.map((state) => capitalize(state.shapeType || 'unknown'))));
+        const [first] = allCandidates;
+        return {
+            ...base,
+            status: 'TYPE_MISMATCH',
+            matchedKey: allCandidates.length === 1 ? getObjectInputKey(first) : null,
+            resolvedType: allCandidates.length === 1 ? first.shapeType : null,
+            resolvedID: allCandidates.length === 1 ? first.clientID : null,
+            isSkeleton: allCandidates.length === 1 && first.shapeType === 'skeleton',
+            candidates: allCandidates,
+            message: `ID ${id} is ${types.join('/')}, but the type filter is ${capitalize(typeFilter)}`,
+        };
+    }
+
+    if (typed.length > 1) {
+        return {
+            ...base,
+            status: 'AMBIGUOUS',
+            candidates: typed,
+            message: `ID ${id} is ambiguous: ${typed.map((state) => getObjectInputKey(state)).join(', ')}`,
+        };
+    }
+
+    const [matched] = typed;
+    const shapeType = matched.shapeType || 'unknown';
+    const serverID = matched.serverID ?? matched.id;
+    return {
+        status: 'VALID',
+        matchedObject: matched,
+        matchedKey: getObjectInputKey(matched),
+        resolvedType: shapeType,
+        resolvedID: matched.clientID,
+        isSkeleton: shapeType === 'skeleton',
+        candidates: typed,
+        message: `${getObjectInputKey(matched)}${typeof serverID === 'number' ? ` (server ID ${serverID})` : ''} ` +
+            `[${capitalize(shapeType)}]`,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Deletion by type / ID / inclusive frame range
+// ---------------------------------------------------------------------------
+
+/** CVAT keeps at most this many undo steps (cvat-core MAX_HISTORY_LENGTH) */
+export const CVAT_MAX_HISTORY_LENGTH = 32;
+
+export type DeletionMode = 'delete-shape' | 'delete-track' | 'hide-track-range';
+
+export interface DeletionTarget {
+    key: string;
+    clientID: number;
+    serverID: number | null;
+    objectType: 'shape' | 'track';
+    shapeType: string;
+    label: string;
+    mode: DeletionMode;
+    /** Frames inside the range where the object is currently visible */
+    frames: number[];
+    /** Exact number of CVAT history (undo) steps this target will create */
+    historySteps: number;
+    /** hide-track-range only: the frame after the range must become a keyframe to keep its geometry */
+    freezeFrame: number | null;
+    /**
+     * hide-track-range only, polygon / polyline / points tracks: frame spans OUTSIDE the range whose
+     * interpolated geometry may shift slightly, because cvat-core interpolates these shapes non-linearly
+     * and the operation adds keyframes next to them (same as setting outside manually in CVAT).
+     */
+    interpolationWarning: [number, number][] | null;
+}
+
+/** cvat-core PolyTrack-based tracks use non-linear (point matching) interpolation */
+const NON_LINEAR_INTERPOLATION_TYPES = new Set(['polygon', 'polyline', 'points']);
+
+export interface DeletionPlan {
+    isValid: boolean;
+    error: string | null;
+    startFrame: number;
+    endFrame: number;
+    targetType: string;
+    targetClientID: number | null;
+    targets: DeletionTarget[];
+    skippedLocked: { key: string; frames: number[] }[];
+    totalHistorySteps: number;
+    exceedsHistoryLimit: boolean;
+}
+
+export interface PlanDeletionParams {
+    jobInstance: any;
+    startFrame: number;
+    endFrame: number;
+    /** last frame of the job, used to check whether a track continues after the range */
+    stopFrame: number;
+    targetType: string;
+    /** client ID of the resolved top-level object; null deletes every object matching targetType */
+    targetClientID?: number | null;
+}
+
+async function getFrameStates(jobInstance: any, frame: number, cache?: Map<number, any[]>): Promise<any[]> {
+    if (cache && cache.has(frame)) {
+        return cache.get(frame) as any[];
+    }
+    const states = await jobInstance.annotations.get(frame, true, []);
+    const result = Array.isArray(states) ? states : [];
+    if (cache) {
+        cache.set(frame, result);
+    }
+    return result;
+}
+
+async function getObjectStateOnFrame(
+    jobInstance: any, frame: number, clientID: number, cache?: Map<number, any[]>,
+): Promise<any | null> {
+    const states = await getFrameStates(jobInstance, frame, cache);
+    return states.find((state: any) => state && !state.removed && !hasParent(state) && state.clientID === clientID) ||
+        null;
+}
+
+function isLocked(state: any): boolean {
+    return Boolean(state?.lock);
+}
+
+/**
+ * Builds a dry-run deletion plan. Nothing is modified.
+ * Rules:
+ *  - only top-level objects are targeted (a Skeleton is always handled as one object with its landmarks)
+ *  - only states that are visible (not outside) inside [startFrame, endFrame] are targeted
+ *  - locked objects are skipped and reported
+ *  - a track that is visible outside the range is never deleted: it is hidden only inside the range
+ */
+export async function planAnnotationDeletion(params: PlanDeletionParams): Promise<DeletionPlan> {
+    const {
+        jobInstance, startFrame, endFrame, stopFrame, targetType,
+    } = params;
+    const targetClientID = typeof params.targetClientID === 'number' ? params.targetClientID : null;
+
+    const plan: DeletionPlan = {
+        isValid: false,
+        error: null,
+        startFrame,
+        endFrame,
+        targetType,
+        targetClientID,
+        targets: [],
+        skippedLocked: [],
+        totalHistorySteps: 0,
+        exceedsHistoryLimit: false,
+    };
+
+    if (!jobInstance || !jobInstance.annotations || typeof jobInstance.annotations.get !== 'function') {
+        return { ...plan, error: 'Job annotations are unavailable' };
+    }
+
+    if (!Number.isInteger(startFrame) || !Number.isInteger(endFrame) || !Number.isInteger(stopFrame)) {
+        return { ...plan, error: 'Frame range must contain integer frames' };
+    }
+
+    if (startFrame > endFrame) {
+        return { ...plan, error: 'Start frame cannot exceed end frame' };
+    }
+
+    if (endFrame > stopFrame) {
+        return { ...plan, error: 'End frame exceeds the last job frame' };
+    }
+
+    const cache = new Map<number, any[]>();
+    const found = new Map<string, { state: any; frames: number[]; hideOps: number; prevVisible: number | null }>();
+    const locked = new Map<string, number[]>();
+
+    for (let frame = startFrame; frame <= endFrame; frame++) {
+        const states = await getFrameStates(jobInstance, frame, cache);
+        for (const state of states) {
+            if (!state || state.removed || hasParent(state)) continue;
+            if (state.objectType !== 'shape' && state.objectType !== 'track') continue;
+            if (targetType !== 'all' && state.shapeType !== targetType) continue;
+            if (targetClientID !== null && state.clientID !== targetClientID) continue;
+            if (state.outside) continue;
+
+            const key = getObjectInputKey(state);
+            if (isLocked(state)) {
+                locked.set(key, [...(locked.get(key) || []), frame]);
+                continue;
+            }
+
+            const entry = found.get(key) || {
+                state, frames: [], hideOps: 0, prevVisible: null,
+            };
+
+            // A hide operation is needed on the first visible frame of each visible run and on every keyframe
+            if (entry.prevVisible === null || entry.prevVisible !== frame - 1 || state.keyframe) {
+                entry.hideOps += 1;
+            }
+
+            entry.frames.push(frame);
+            entry.prevVisible = frame;
+            found.set(key, entry);
+        }
+    }
+
+    for (const [key, entry] of found.entries()) {
+        const { state, frames } = entry;
+        const isSkeleton = state.shapeType === 'skeleton';
+        const target: DeletionTarget = {
+            key,
+            clientID: state.clientID,
+            serverID: typeof (state.serverID ?? state.id) === 'number' ? (state.serverID ?? state.id) : null,
+            objectType: state.objectType,
+            shapeType: state.shapeType,
+            label: state.label?.name || '',
+            mode: 'delete-shape',
+            frames,
+            historySteps: 1,
+            freezeFrame: null,
+            interpolationWarning: null,
+        };
+
+        if (state.objectType === 'track') {
+            const firstKeyframe = state.keyframes?.first;
+            const visibleBefore = typeof firstKeyframe === 'number' ? firstKeyframe < startFrame : true;
+            let visibleAfter = false;
+            let afterIsKeyframe = false;
+            if (endFrame < stopFrame) {
+                const after = await getObjectStateOnFrame(jobInstance, endFrame + 1, state.clientID, cache);
+                visibleAfter = Boolean(after && !after.outside);
+                afterIsKeyframe = Boolean(after && after.keyframe);
+            }
+
+            if (!visibleBefore && !visibleAfter) {
+                target.mode = 'delete-track';
+                target.historySteps = 1;
+            } else {
+                target.mode = 'hide-track-range';
+                const freezeNeeded = visibleAfter && !afterIsKeyframe;
+                target.freezeFrame = freezeNeeded ? endFrame + 1 : null;
+                // cvat-core: a skeleton keyframe change records two undo steps, other tracks one
+                const freezeSteps = freezeNeeded ? (isSkeleton ? 2 : 1) : 0;
+                target.historySteps = freezeSteps + entry.hideOps;
+
+                if (NON_LINEAR_INTERPOLATION_TYPES.has(state.shapeType)) {
+                    const spans: [number, number][] = [];
+                    const atStart = await getObjectStateOnFrame(jobInstance, startFrame, state.clientID, cache);
+                    const prev = atStart?.keyframes?.prev;
+                    if (atStart && !atStart.outside && !atStart.keyframe &&
+                        typeof prev === 'number' && prev < startFrame - 1) {
+                        spans.push([prev + 1, startFrame - 1]);
+                    }
+                    if (target.freezeFrame !== null) {
+                        const after = await getObjectStateOnFrame(
+                            jobInstance, target.freezeFrame, state.clientID, cache,
+                        );
+                        const next = after?.keyframes?.next;
+                        if (typeof next === 'number' && next > target.freezeFrame + 1) {
+                            spans.push([target.freezeFrame + 1, next - 1]);
+                        }
+                    }
+                    target.interpolationWarning = spans.length ? spans : null;
+                }
+            }
+        }
+
+        plan.targets.push(target);
+    }
+
+    plan.targets.sort((a, b) => (a.frames[0] - b.frames[0]) || (a.clientID - b.clientID));
+    plan.skippedLocked = Array.from(locked.entries()).map(([key, frames]) => ({ key, frames }));
+    plan.totalHistorySteps = plan.targets.reduce((acc, target) => acc + target.historySteps, 0);
+    plan.exceedsHistoryLimit = plan.totalHistorySteps > CVAT_MAX_HISTORY_LENGTH;
+    plan.isValid = plan.targets.length > 0 && !plan.exceedsHistoryLimit;
+    if (plan.targets.length === 0) {
+        plan.error = 'No unlocked visible objects match the filters in this range';
+    } else if (plan.exceedsHistoryLimit) {
+        plan.error = `This deletion needs ${plan.totalHistorySteps} undo steps, but CVAT keeps only ` +
+            `${CVAT_MAX_HISTORY_LENGTH}. Narrow the frame range, type or ID so it stays fully undoable.`;
+    }
+
+    return plan;
+}
+
+export interface DeletionResult {
+    deletedObjects: number;
+    hiddenTracks: number;
+    affectedFrames: number[];
+    skippedLocked: string[];
+    errors: string[];
+    historySteps: number;
+}
+
+/**
+ * Executes a plan created by planAnnotationDeletion with native CVAT ObjectState operations,
+ * so each change is recorded in CVAT history (Undo/Redo) and marked as unsaved.
+ * Objects are re-read and re-checked (lock, outside) before every change.
+ */
+export async function executeAnnotationDeletion(
+    jobInstance: any,
+    plan: DeletionPlan,
+): Promise<DeletionResult> {
+    const result: DeletionResult = {
+        deletedObjects: 0,
+        hiddenTracks: 0,
+        affectedFrames: [],
+        skippedLocked: [],
+        errors: [],
+        historySteps: 0,
+    };
+
+    if (!plan || !plan.isValid) {
+        result.errors.push(plan?.error || 'Deletion plan is not valid');
+        return result;
+    }
+
+    const affected = new Set<number>();
+    const { startFrame, endFrame } = plan;
+
+    for (const target of plan.targets) {
+        try {
+            if (target.mode === 'delete-shape' || target.mode === 'delete-track') {
+                const [frame] = target.frames;
+                const state = await getObjectStateOnFrame(jobInstance, frame, target.clientID);
+                if (!state) {
+                    result.errors.push(`${target.key}: object not found on frame ${frame}`);
+                    continue;
+                }
+                if (isLocked(state)) {
+                    result.skippedLocked.push(target.key);
+                    continue;
+                }
+
+                const removed = await state.delete(frame, false);
+                if (removed) {
+                    result.deletedObjects += 1;
+                    result.historySteps += 1;
+                    target.frames.forEach((value) => affected.add(value));
+                } else {
+                    result.errors.push(`${target.key}: CVAT refused to delete the object`);
+                }
+                continue;
+            }
+
+            // hide-track-range: keep the track identity, make it outside only inside [startFrame, endFrame]
+            if (target.freezeFrame !== null) {
+                const after = await getObjectStateOnFrame(jobInstance, target.freezeFrame, target.clientID);
+                if (after && !after.outside && !after.keyframe && !isLocked(after)) {
+                    after.keyframe = true;
+                    await after.save();
+                    result.historySteps += target.shapeType === 'skeleton' ? 2 : 1;
+                }
+            }
+
+            let hiddenAny = false;
+            let frame = startFrame;
+            while (frame <= endFrame) {
+                const state = await getObjectStateOnFrame(jobInstance, frame, target.clientID);
+                if (!state) {
+                    frame += 1;
+                    continue;
+                }
+
+                if (isLocked(state)) {
+                    result.skippedLocked.push(target.key);
+                    break;
+                }
+
+                if (!state.outside) {
+                    state.outside = true;
+                    const saved = await state.save();
+                    result.historySteps += 1;
+                    hiddenAny = true;
+                    affected.add(frame);
+                    const next = saved?.keyframes?.next;
+                    if (typeof next === 'number' && next > frame) {
+                        for (let value = frame + 1; value < next && value <= endFrame; value++) {
+                            affected.add(value);
+                        }
+                        frame = next;
+                    } else {
+                        // no later keyframe: the track stays outside until the end
+                        for (let value = frame + 1; value <= endFrame; value++) {
+                            affected.add(value);
+                        }
+                        break;
+                    }
+                } else {
+                    const next = state.keyframes?.next;
+                    frame = typeof next === 'number' && next > frame ? next : frame + 1;
+                }
+            }
+
+            if (hiddenAny) {
+                result.hiddenTracks += 1;
+            }
+        } catch (error: any) {
+            result.errors.push(`${target.key}: ${error?.message || 'unknown error'}`);
+        }
+    }
+
+    result.affectedFrames = Array.from(affected)
+        .filter((frame) => frame >= startFrame && frame <= endFrame)
+        .sort((a, b) => a - b);
+    result.skippedLocked = Array.from(new Set(result.skippedLocked));
+    return result;
+}
+
+export interface HistorySnapshot {
+    undo: [string, number | null][];
+    redo: [string, number | null][];
+}
+
+function sameEntries(a: [string, number | null][], b: [string, number | null][]): boolean {
+    return a.length === b.length && a.every((entry, idx) => entry[0] === b[idx][0] && entry[1] === b[idx][1]);
+}
+
+/**
+ * Checks whether the last `count` undo steps are still the steps recorded by a deletion
+ * (i.e. nothing else was done after it), so the whole deletion can be undone at once.
+ */
+export function canUndoDeletionBatch(
+    current: HistorySnapshot | null, recorded: [string, number | null][], count: number,
+): boolean {
+    if (!current || count <= 0 || recorded.length !== count) return false;
+    if (current.undo.length < count) return false;
+    return sameEntries(current.undo.slice(-count), recorded);
+}
+
+/** Checks whether the deletion batch was undone and can be redone at once. */
+export function canRedoDeletionBatch(
+    current: HistorySnapshot | null, recorded: [string, number | null][], count: number,
+): boolean {
+    if (!current || count <= 0 || recorded.length !== count) return false;
+    if (current.redo.length < count) return false;
+    // redo stack keeps the most recently undone action on top (reverse order)
+    return sameEntries(current.redo.slice(-count).reverse(), recorded);
+}

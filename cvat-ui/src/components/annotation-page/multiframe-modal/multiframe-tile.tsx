@@ -44,6 +44,8 @@ interface Props {
     expandedStyle?: React.CSSProperties;
     otherTileStyle?: React.CSSProperties;
     tileStyle?: React.CSSProperties;
+    canResize?: boolean;
+    isEditable?: boolean;
     onStartExpand?(frame: number, e: React.MouseEvent, tileEl: HTMLElement): void;
     onRestoreGrid?(): void;
     onResetLayout?(frame: number): void;
@@ -51,6 +53,10 @@ interface Props {
     onZoomFrame?(frame: number): void;
     onFrameStatesLoaded?(frameNumber: number, states: any[]): void;
     onSelectObject?(state: any, elementState?: any): void;
+    /** Reports the actual displayed (render) size of the frame, used by the zoom-in-place fit */
+    onRenderSizeChange?(frameNumber: number, width: number, height: number): void;
+    /** Changing this value reloads the frame annotations (e.g. after deletion, undo or redo) */
+    refreshToken?: number;
 }
 
 function MultiframeTile(props: Props): JSX.Element {
@@ -69,6 +75,8 @@ function MultiframeTile(props: Props): JSX.Element {
         expandedStyle,
         otherTileStyle,
         tileStyle,
+        canResize = true,
+        isEditable = true,
         onStartExpand,
         onRestoreGrid,
         onResetLayout,
@@ -76,6 +84,8 @@ function MultiframeTile(props: Props): JSX.Element {
         onZoomFrame,
         onFrameStatesLoaded,
         onSelectObject,
+        onRenderSizeChange,
+        refreshToken = 0,
     } = props;
 
     const dispatch = useDispatch();
@@ -165,7 +175,7 @@ function MultiframeTile(props: Props): JSX.Element {
         return () => {
             isCancelled = true;
         };
-    }, [frameNumber, jobInstance]);
+    }, [frameNumber, jobInstance, refreshToken]);
 
     // Reset manual viewport when selected object, auto-zoom, or auto-follow toggle changes
     useEffect(() => {
@@ -279,6 +289,13 @@ function MultiframeTile(props: Props): JSX.Element {
     ) : dimensions.height;
 
     const zoomPct = calculateZoomPercentage(effectiveViewport, dimensions.width);
+
+    // Report the actual displayed frame size so an expanded tile can keep the real aspect ratio
+    useEffect(() => {
+        if (onRenderSizeChange && renderWidth > 0 && renderHeight > 0) {
+            onRenderSizeChange(frameNumber, renderWidth, renderHeight);
+        }
+    }, [onRenderSizeChange, frameNumber, renderWidth, renderHeight]);
 
     // Measure available container size for letterbox containment
     useEffect(() => {
@@ -867,9 +884,9 @@ function MultiframeTile(props: Props): JSX.Element {
                             hasSelection={hasSelection}
                             isOccluded={matchResult.isOccluded}
                             onSelectObject={handleSelectObject}
-                            onEditLandmark={isActiveFrame ? handleEditLandmark : undefined}
-                            onEditShape={isActiveFrame ? handleEditShape : undefined}
-                            onEditSkeleton={isActiveFrame ? handleEditSkeleton : undefined}
+                            onEditLandmark={isActiveFrame && isEditable ? handleEditLandmark : undefined}
+                            onEditShape={isActiveFrame && isEditable ? handleEditShape : undefined}
+                            onEditSkeleton={isActiveFrame && isEditable ? handleEditSkeleton : undefined}
                             onAutoFollow={isActiveFrame ? handleAutoFollow : undefined}
                         />
                     )}
@@ -997,7 +1014,7 @@ function MultiframeTile(props: Props): JSX.Element {
                 </div>
 
                 {/* Drag-to-resize / drag-to-expand handle at bottom-right corner of tile */}
-                {!loading && !error && (
+                {!loading && !error && canResize && (
                     <div
                         className={`cvat-multiframe-tile-resize-handle ${isResizing ? 'cvat-multiframe-tile-resizing' : ''}`}
                         onMouseDown={handleResizeMouseDown}

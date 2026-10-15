@@ -196,6 +196,9 @@
     &.cvat-multiframe-tile-zoomed-in-place {
         border: 2.5px solid #1890ff !important;
         box-shadow: 0 0 14px rgba(24, 144, 255, 0.8) !important;
+        justify-self: center;
+        width: fit-content;
+        max-width: 100%;
     }
 }
 
@@ -490,4 +493,70 @@
         background: #73d13d !important;
         border-color: #73d13d !important;
     }
+}
+
+.cvat-multiframe-delete-btn {
+    font-weight: 500;
+}
+
+.cvat-multiframe-clear-id-btn {
+    padding: 0 4px !important;
+    font-size: 11px;
+}
+
+.cvat-multiframe-id-status-tag {
+    font-size: 11px;
+    line-height: 18px;
+    margin-right: 0;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cvat-multiframe-delete-modal {
+    .ant-modal-content {
+        background: #242424;
+        color: #e0e0e0;
+        border-radius: 6px;
+    }
+
+    .ant-modal-header {
+        background: #242424;
+        border-bottom: 1px solid #383838;
+        .ant-modal-title {
+            color: #fff;
+        }
+    }
+
+    .ant-modal-body {
+        padding: 16px 24px;
+        color: #e0e0e0;
+    }
+
+    .ant-modal-footer {
+        background: #242424;
+        border-top: 1px solid #383838;
+    }
+
+    .ant-typography {
+        color: #e0e0e0;
+    }
+}
+
+.cvat-multiframe-delete-preview-card {
+    background: #1a1a1a;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    padding: 10px 14px;
+    margin-top: 10px;
+}
+
+.cvat-multiframe-delete-preview-list {
+    max-height: 180px;
+    overflow-y: auto;
+    margin: 6px 0 0;
+    padding-left: 18px;
+    font-family: monospace;
+    font-size: 11px;
 }

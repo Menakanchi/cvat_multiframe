@@ -826,6 +826,9 @@ function calculateOtherTileOpacity(progress, baseOpacity = 1, hideThreshold = 0.
     };
 }
 
+// NOTE: Zoom fit, Object ID resolution and deletion are tested against the actual implementation
+// (multiframe-utils.ts) in multiframe-utils.real.spec.mjs, not against copies.
+
 console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
 
 // TC 1: Alt+M Shortcut Registration
@@ -6077,7 +6080,75 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     console.log('  ✔ TC 111 passed.');
 }
 
+// =========================================================================
+// TC 112: Expanded-Frame Zoom, Type/Object ID Redesign, and Deletion by Range (UI wiring)
+// Behaviour of the underlying functions is covered by multiframe-utils.real.spec.mjs
+// =========================================================================
+{
+    console.log('TC 112: Expanded-Frame Zoom, Object ID and Deletion UI wiring...');
+    const fs = require('fs');
+    const path = require('path');
+    const workspaceSource = fs.readFileSync(path.resolve(__dirname, 'multiframe-workspace-view.tsx'), 'utf8');
+    const tileSource = fs.readFileSync(path.resolve(__dirname, 'multiframe-tile.tsx'), 'utf8');
+    const utilsSource = fs.readFileSync(path.resolve(__dirname, 'multiframe-utils.ts'), 'utf8');
+
+    // Zoom uses the actual displayed frame size reported by the tile, never a hard-coded resolution
+    assert.ok(
+        !/calculateExpandedFitDimensions\([^)]*1920/.test(workspaceSource),
+        'Expanded fit must not use a hard-coded 1920x1080 frame size',
+    );
+    assert.ok(workspaceSource.includes('frameRenderSizes[frame]'), 'Expanded fit uses the reported frame size');
+    assert.ok(tileSource.includes('onRenderSizeChange(frameNumber, renderWidth, renderHeight)'),
+        'Tile reports its actual render size');
+    assert.ok(workspaceSource.includes('optimalFit.isValid ?'), 'Unmeasurable sizes fall back to the default layout');
+    assert.ok(
+        workspaceSource.includes('canResize={!isAnyZoomed && (expandedFrame === null || expandedFrame === frame)}') &&
+        workspaceSource.includes('isEditable={!isOtherExpanded}'),
+        'Other tiles stay visible but are not resizable/editable while a frame is zoomed',
+    );
+
+    // Type / Object ID controls
+    assert.ok(workspaceSource.includes("className='cvat-multiframe-type-select'"), 'Type dropdown exists');
+    assert.ok(workspaceSource.includes('Object.values(ShapeType)'), 'Type dropdown lists the actual CVAT shape types');
+    assert.ok(workspaceSource.includes("className='cvat-multiframe-object-id-input'"), 'Object ID input exists');
+    assert.ok(workspaceSource.includes("className='cvat-multiframe-clear-id-btn'"), 'Object ID has a Clear action');
+    assert.ok(workspaceSource.includes('setInputObjectID(getObjectInputKey('),
+        'Selecting an object fills an unambiguous ID (track_N / shape_N)');
+
+    // Deletion: dry-run preview, mandatory confirmation, native history, refresh
+    assert.ok(
+        workspaceSource.includes('planAnnotationDeletion(') && workspaceSource.includes('executeAnnotationDeletion('),
+        'Deletion uses a dry-run plan and executes the same plan',
+    );
+    assert.ok(
+        workspaceSource.includes("className='cvat-multiframe-delete-preview-list'"),
+        'Preview lists target objects',
+    );
+    assert.ok(
+        workspaceSource.includes('deletionPlan.isValid && confirmDelete'),
+        'Confirmation is mandatory for every deletion',
+    );
+    assert.ok(
+        workspaceSource.includes('jobInstance.actions.undo(lastDeletion.count)') &&
+        workspaceSource.includes('jobInstance.actions.redo(lastDeletion.count)'),
+        'Batch undo/redo uses native CVAT history',
+    );
+    assert.ok(
+        workspaceSource.includes('refreshToken={tilesRefreshToken}') &&
+        tileSource.includes('[frameNumber, jobInstance, refreshToken]'),
+        'Tiles reload annotations after deletion/undo/redo',
+    );
+    assert.ok(
+        !utilsSource.includes('group.id === st.group.id'),
+        'Deletion never removes objects only because they share a group',
+    );
+    assert.ok(!/\.delete\([^)]*,\s*true\)/.test(utilsSource), 'Deletion never forces removal of locked objects');
+    assert.ok(workspaceSource.includes('open={showDeleteModal}'), 'antd 5 Modal uses the open prop');
+    console.log('  ✔ TC 112 passed.');
+}
+
 console.log('\n=== All Real Multi-Frame Viewer Tests Passed Successfully! ===');
+
 
 
 
