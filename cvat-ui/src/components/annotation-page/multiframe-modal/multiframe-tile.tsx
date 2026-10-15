@@ -16,6 +16,9 @@ import { FullscreenOutlined, FullscreenExitOutlined, AppstoreOutlined } from '@a
 
 import { activateObject, updateAnnotationsAsync } from 'actions/annotation-actions';
 import {
+    getTypeFilterMatches,
+    getTypeFilterBoundingBox,
+    BBox,
     resolveCrossFrameIdentity,
     getObjectBoundingBox,
     resolveSkeletonWrappingBox,
@@ -36,6 +39,8 @@ interface Props {
     jobInstance: any;
     isActiveFrame: boolean;
     selectedObject: any | null;
+    /** Type mode: label (object type) whose objects are shown; null when Type mode is not active */
+    typeFilterLabel?: string | null;
     autoZoomEnabled?: boolean;
     autoFollowEnabled?: boolean;
     isZoomedInPlace?: boolean;
@@ -62,6 +67,7 @@ function MultiframeTile(props: Props): JSX.Element {
         jobInstance,
         isActiveFrame,
         selectedObject,
+        typeFilterLabel = null,
         autoZoomEnabled = true,
         autoFollowEnabled = true,
         isZoomedInPlace = false,
@@ -169,10 +175,10 @@ function MultiframeTile(props: Props): JSX.Element {
         };
     }, [frameNumber, jobInstance, refreshToken]);
 
-    // Reset manual viewport when selected object, auto-zoom, or auto-follow toggle changes
+    // Reset manual viewport when the selected object / type, auto-zoom, or auto-follow toggle changes
     useEffect(() => {
         setManualViewport(null);
-    }, [selectedObject, autoZoomEnabled, autoFollowEnabled]);
+    }, [selectedObject, typeFilterLabel, autoZoomEnabled, autoFollowEnabled]);
 
     // 4. Pure identity resolution
     const matchResult = useMemo(
@@ -217,23 +223,28 @@ function MultiframeTile(props: Props): JSX.Element {
         return null;
     }, [matchResult, frameStates]);
 
-    const hasSelection = Boolean(selectedObject);
+    // Type mode (read-only): objects of the selected type on this frame
+    const typeMatches = useMemo(() => (
+        typeFilterLabel ? getTypeFilterMatches(frameStates, typeFilterLabel) : null
+    ), [typeFilterLabel, frameStates]);
+    const typeMatchedClientIDs = useMemo(() => (
+        typeMatches ? typeMatches.map((state: any) => state.clientID) : null
+    ), [typeMatches]);
+
+    const hasSelection = Boolean(selectedObject) || Boolean(typeMatches);
+
+    // Area the view focuses on (view only): the matched object in ID mode,
+    // or all objects of the selected type on this frame in Type mode
+    const focusBBox = useMemo<BBox | null>(() => {
+        if (typeMatches) return getTypeFilterBoundingBox(typeMatches, frameStates);
+        if (!selectedObject || matchResult.status !== 'MATCHED') return null;
+        return getObjectBoundingBox(matchResult.targetState, matchResult.targetElementState, frameStates);
+    }, [typeMatches, selectedObject, matchResult, frameStates]);
 
     // 5. Per-frame auto-zoom / auto-follow viewport calculation
     const targetViewport = useMemo<Viewport>(() => {
-        if (
-            !selectedObject ||
-            matchResult.status !== 'MATCHED' ||
-            dimensions.width <= 0 ||
-            dimensions.height <= 0
-        ) {
-            return {
-                x: 0, y: 0, width: dimensions.width, height: dimensions.height,
-            };
-        }
-
-        const bbox = getObjectBoundingBox(matchResult.targetState, matchResult.targetElementState, frameStates);
-        if (!bbox) {
+        const bbox = focusBBox;
+        if (!bbox || dimensions.width <= 0 || dimensions.height <= 0) {
             return {
                 x: 0, y: 0, width: dimensions.width, height: dimensions.height,
             };
@@ -257,21 +268,18 @@ function MultiframeTile(props: Props): JSX.Element {
         return {
             x: 0, y: 0, width: dimensions.width, height: dimensions.height,
         };
-    }, [autoZoomEnabled, autoFollowEnabled, selectedObject, matchResult, dimensions, frameStates]);
+    }, [autoZoomEnabled, autoFollowEnabled, focusBBox, dimensions]);
 
     // Automatically pan manualViewport to follow the matched object when autoFollowEnabled is true
     useEffect(() => {
-        if (!autoFollowEnabled || !manualViewport || matchResult.status !== 'MATCHED' || dimensions.width <= 0 || dimensions.height <= 0) {
+        if (!autoFollowEnabled || !manualViewport || !focusBBox || dimensions.width <= 0 || dimensions.height <= 0) {
             return;
         }
-        const bbox = getObjectBoundingBox(matchResult.targetState, matchResult.targetElementState, frameStates);
-        if (!bbox) return;
-
-        const centeredVp = centerViewportOnObject(manualViewport, bbox, dimensions.width, dimensions.height);
+        const centeredVp = centerViewportOnObject(manualViewport, focusBBox, dimensions.width, dimensions.height);
         if (centeredVp.x !== manualViewport.x || centeredVp.y !== manualViewport.y) {
             setManualViewport(centeredVp);
         }
-    }, [autoFollowEnabled, frameStates, matchResult, dimensions]);
+    }, [autoFollowEnabled, focusBBox, dimensions]);
 
     // Effective Viewport: Manual zoom/pan overrides targetViewport until reset
     const effectiveViewport = useMemo<Viewport>(() => {
@@ -874,6 +882,7 @@ function MultiframeTile(props: Props): JSX.Element {
                             matchedRectClientID={matchedRectClientID}
                             matchedSkeletonClientID={matchedSkeletonClientID}
                             hasSelection={hasSelection}
+                            typeMatchedClientIDs={typeMatchedClientIDs}
                             isOccluded={matchResult.isOccluded}
                             onSelectObject={handleSelectObject}
                             onEditLandmark={isActiveFrame && isEditable ? handleEditLandmark : undefined}
@@ -964,6 +973,20 @@ function MultiframeTile(props: Props): JSX.Element {
                     </div>
 
                     <div className='cvat-multiframe-tile-header-right'>
+                        {typeMatches && !loading && (
+                            <Tag
+                                color={typeMatches.length > 0 ? 'blue' : 'error'}
+                                className='cvat-multiframe-type-match-tag'
+                                title={`Objects of type "${typeFilterLabel}" on this frame`}
+                            >
+                                {typeMatches.length > 0 ? `${typeFilterLabel}: ${typeMatches.length}` : 'None'}
+                            </Tag>
+                        )}
+                        {typeMatches && typeMatches.length > 0 && isTileZoomed && (
+                            <Tag color='geekblue' className='cvat-multiframe-badge'>
+                                Zoomed
+                            </Tag>
+                        )}
                         {selectedObject && (
                             <>
                                 {matchResult.status === 'MATCHED' && (
@@ -985,7 +1008,9 @@ function MultiframeTile(props: Props): JSX.Element {
                                     <Tag color='error'>Skeleton Absent</Tag>
                                 )}
                                 {matchResult.status === 'NO_IDENTITY' && (
-                                    <Tag color='default'>No Link</Tag>
+                                    <Tag color='default' title='Shapes exist on one frame only'>
+                                        Not on this frame
+                                    </Tag>
                                 )}
                             </>
                         )}

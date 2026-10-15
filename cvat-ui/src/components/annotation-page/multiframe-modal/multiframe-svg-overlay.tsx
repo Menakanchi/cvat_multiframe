@@ -18,6 +18,8 @@ interface Props {
     matchedRectClientID?: number | null;
     matchedSkeletonClientID?: number | null;
     hasSelection?: boolean;
+    /** Type mode: client IDs of the objects of the selected type on this frame (others are hidden) */
+    typeMatchedClientIDs?: number[] | null;
     isOccluded?: boolean;
     activeClientID?: number | null;
     activeElementID?: number | null;
@@ -267,6 +269,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
         matchedRectClientID,
         matchedSkeletonClientID,
         hasSelection = false,
+        typeMatchedClientIDs = null,
         isOccluded,
         activeClientID,
         activeElementID,
@@ -278,6 +281,9 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
     } = props;
 
     const svgRef = useRef<SVGSVGElement | null>(null);
+    const typeMatches = useMemo(() => (
+        Array.isArray(typeMatchedClientIDs) ? new Set(typeMatchedClientIDs) : null
+    ), [typeMatchedClientIDs]);
     const [dragState, setDragState] = useState<DragState | null>(null);
     const dragStateRef = useRef<DragState | null>(null);
     dragStateRef.current = dragState;
@@ -655,9 +661,11 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
 
                 // 1. Skeletons and Landmark Elements
                 if (state.shapeType === 'skeleton' && Array.isArray(state.elements)) {
-                    const isSkeletonMatched = state.clientID === matchedSkeletonClientID ||
+                    const isSkeletonMatched = typeMatches ? typeMatches.has(state.clientID) : (
+                        state.clientID === matchedSkeletonClientID ||
                         state.clientID === matchedClientID ||
-                        state.clientID === activeClientID;
+                        state.clientID === activeClientID
+                    );
 
                     if (hasSelection && !isSkeletonMatched) {
                         return null;
@@ -954,7 +962,9 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
 
                 // 2. Standalone Points or Points Tracks
                 if (state.shapeType === 'points' && Array.isArray(state.points)) {
-                    const isMatched = state.clientID === matchedClientID || state.clientID === activeClientID;
+                    const isMatched = typeMatches ? typeMatches.has(state.clientID) : (
+                        state.clientID === matchedClientID || state.clientID === activeClientID
+                    );
                     if (hasSelection && !isMatched) {
                         return null;
                     }
@@ -1059,7 +1069,8 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                         xbr += skelDx;
                         ybr += skelDy;
                     }
-                    const isMatched = state.clientID === matchedClientID ||
+                    const isMatched = typeMatches ? typeMatches.has(state.clientID) : (
+                        state.clientID === matchedClientID ||
                         (typeof matchedRectClientID === 'number' && state.clientID === matchedRectClientID) ||
                         (typeof matchedSkeletonClientID === 'number' && (
                             state.parentID === matchedSkeletonClientID ||
@@ -1067,7 +1078,8 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                 st.clientID === matchedSkeletonClientID && st.group?.id === state.group.id
                             )))
                         )) ||
-                        state.clientID === activeClientID;
+                        state.clientID === activeClientID
+                    );
 
                     // When an object is selected, hide bounding boxes of all other objects
                     if (hasSelection && !isMatched) {
@@ -1175,9 +1187,11 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                     const pointsStr = state.points.reduce((acc: string, val: number, idx: number) => (
                         `${acc}${idx % 2 === 0 ? ' ' : ','}${val}`
                     ), '').trim();
-                    const isMatched = state.clientID === matchedClientID ||
+                    const isMatched = typeMatches ? typeMatches.has(state.clientID) : (
+                        state.clientID === matchedClientID ||
                         (typeof matchedRectClientID === 'number' && state.clientID === matchedRectClientID) ||
-                        state.clientID === activeClientID;
+                        state.clientID === activeClientID
+                    );
 
                     // When an object is selected, hide other polygons
                     if (hasSelection && !isMatched) {

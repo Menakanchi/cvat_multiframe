@@ -45,8 +45,10 @@ import {
     calculateExpandedFitDimensions,
     resolveObjectByIDAndType,
     getObjectInputKey,
-    matchesLabelFilter,
-    getStateLabelName,
+    EMPTY_OBJECT_FILTER,
+    ObjectFilterState,
+    selectTypeFilter,
+    enterIDFilter,
     planAnnotationDeletion,
     executeAnnotationDeletion,
     canUndoDeletionBatch,
@@ -82,6 +84,18 @@ function describeDeletionTarget(target: DeletionTarget, plan: DeletionPlan): str
     return `${prefix}hide only in frames #${plan.startFrame}-#${plan.endFrame} ` +
         `(visible on ${target.frames.length} frame(s)); frames outside the range are kept`;
 }
+const FILTER_MODE_COLORS: Record<ObjectFilterState['mode'], string> = {
+    none: 'default',
+    type: 'blue',
+    id: 'purple',
+};
+
+function describeObjectFilter(filter: ObjectFilterState): string {
+    if (filter.mode === 'type') return `Filter: Type = ${filter.label}`;
+    if (filter.mode === 'id') return `Filter: ID = ${filter.idInput.trim()}`;
+    return 'No filter';
+}
+
 // Outer border of a zoomed-in-place tile (2.5px on each side), see styles.scss
 const ZOOMED_TILE_CHROME = 5;
 // Grid padding (2px on each side), see styles.scss
@@ -138,7 +152,14 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
 
     // Object Selector & Auto-Zoom State
     const [selectedObjectKey, setSelectedObjectKey] = useState<string | null>(null);
-    const [selectedLabelFilter, setSelectedLabelFilter] = useState<string>('all');
+    // Type mode and ID mode are mutually exclusive: only one of them is active at a time
+    const [objectFilter, setObjectFilter] = useState<ObjectFilterState>(EMPTY_OBJECT_FILTER);
+    const selectedLabelFilter = objectFilter.label;
+    const inputObjectID = objectFilter.idInput;
+    const applyObjectFilter = useCallback((next: ObjectFilterState) => {
+        setObjectFilter(next);
+        setSelectedObjectKey(next.mode === 'id' ? next.idInput.trim() : null);
+    }, []);
     const [autoZoomEnabled, setAutoZoomEnabled] = useState<boolean>(true);
     const [autoFollowEnabled, setAutoFollowEnabled] = useState<boolean>(true);
     const [focusModeEnabled, setFocusModeEnabled] = useState<boolean>(false);
@@ -218,26 +239,26 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         return Array.from(names);
     }, [jobLabels]);
 
-    // Object ID input and resolution
-    const [inputObjectID, setInputObjectID] = useState<string>('');
-
+    // ID mode: the Object ID is resolved on its own, the type is never combined with it
     const idResolution = useMemo(() => (
-        resolveObjectByIDAndType(inputObjectID, selectedLabelFilter, combinedStates)
-    ), [inputObjectID, selectedLabelFilter, combinedStates]);
+        resolveObjectByIDAndType(inputObjectID, 'all', combinedStates)
+    ), [inputObjectID, combinedStates]);
 
-    // Resolve the active selected object instance
+    // Resolve the active selected object instance (ID mode only)
     const selectedObject = useMemo(() => {
+        if (objectFilter.mode !== 'id') return null;
         if (idResolution.status === 'VALID' && idResolution.matchedObject) {
             return idResolution.matchedObject;
         }
         if (selectedObjectKey) {
             const matched = selectableObjects.find((o) => o.key === selectedObjectKey);
-            if (matched && matchesLabelFilter(matched.sourceState, selectedLabelFilter)) {
-                return matched.sourceState;
-            }
+            if (matched) return matched.sourceState;
         }
         return null;
-    }, [idResolution, selectedObjectKey, selectableObjects, selectedLabelFilter]);
+    }, [objectFilter.mode, idResolution, selectedObjectKey, selectableObjects]);
+
+    // Type mode: label whose objects are shown in every visible frame
+    const typeFilterLabel = objectFilter.mode === 'type' ? objectFilter.label : null;
 
     // Clear selection if selected object is removed / no longer exists
     useEffect(() => {
@@ -249,9 +270,16 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         }
     }, [initialFetchDone, selectedObjectKey, selectableObjects]);
 
-    // Initialize selection from active canvas selection if not yet chosen
+    // Initialize ID mode from the active canvas selection when no filter is active (once per activation)
+    const lastActivationRef = useRef<string>('');
     useEffect(() => {
-        if (!inputObjectID && (activatedStateID || activatedElementID)) {
+        const activationKey = `${activatedStateID ?? ''}:${activatedElementID ?? ''}`;
+        if (activationKey === lastActivationRef.current) return;
+        if (!activatedStateID && !activatedElementID) {
+            lastActivationRef.current = activationKey;
+            return;
+        }
+        if (objectFilter.mode === 'none') {
             let match: any = null;
             if (activatedStateID) {
                 match = combinedStates.find((o) => o.clientID === activatedStateID);
@@ -268,11 +296,13 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     const parent = combinedStates.find((o) => o.clientID === parentID);
                     if (parent) match = parent;
                 }
-                setInputObjectID(getObjectInputKey(match));
-                setSelectedObjectKey(getObjectInputKey(match));
+                lastActivationRef.current = activationKey;
+                applyObjectFilter(enterIDFilter(getObjectInputKey(match)));
             }
+        } else {
+            lastActivationRef.current = activationKey;
         }
-    }, [activatedStateID, activatedElementID, combinedStates, inputObjectID]);
+    }, [activatedStateID, activatedElementID, combinedStates, objectFilter.mode, applyObjectFilter]);
 
     // Measure the visible grid area (without scrollbar and padding) for the expanded tile fit
     const [gridElement, setGridElement] = useState<HTMLDivElement | null>(null);
@@ -321,8 +351,10 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const [showDeleteModal, setShowDeleteModal] = useState<boolean>(false);
     const [deleteStartFrame, setDeleteStartFrame] = useState<number | null>(null);
     const [deleteEndFrame, setDeleteEndFrame] = useState<number | null>(null);
-    const [deleteLabel, setDeleteLabel] = useState<string>('all');
-    const [deleteIDInput, setDeleteIDInput] = useState<string>('');
+    // Deletion filter: Type mode or ID mode, never both
+    const [deleteFilter, setDeleteFilter] = useState<ObjectFilterState>(EMPTY_OBJECT_FILTER);
+    const deleteLabel = deleteFilter.label;
+    const deleteIDInput = deleteFilter.idInput;
     const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
     const [isDeleting, setIsDeleting] = useState<boolean>(false);
     const [deletionPlan, setDeletionPlan] = useState<DeletionPlan | null>(null);
@@ -375,12 +407,11 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const handleOpenDeleteModal = useCallback(() => {
         setDeleteStartFrame(rangeStart);
         setDeleteEndFrame(rangeEnd);
-        setDeleteLabel(selectedLabelFilter);
-        setDeleteIDInput(inputObjectID);
+        setDeleteFilter(objectFilter);
         setConfirmDelete(false);
         setDeletionPlan(null);
         setShowDeleteModal(true);
-    }, [rangeStart, rangeEnd, selectedLabelFilter, inputObjectID]);
+    }, [rangeStart, rangeEnd, objectFilter]);
 
     const deleteValidation = validateFrameRange(
         deleteStartFrame,
@@ -391,8 +422,8 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     );
 
     const deleteIDResolution = useMemo(() => (
-        resolveObjectByIDAndType(deleteIDInput, deleteLabel, combinedStates)
-    ), [deleteIDInput, deleteLabel, combinedStates]);
+        resolveObjectByIDAndType(deleteIDInput, 'all', combinedStates)
+    ), [deleteIDInput, combinedStates]);
 
     const hasDeleteID = Boolean(deleteIDInput.trim());
     const deleteIDIsUsable = !hasDeleteID || deleteIDResolution.status === 'VALID';
@@ -481,8 +512,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
             if (inputObjectID && deletionPlan.targetClientID !== null &&
                 selectedObject && selectedObject.clientID === deletionPlan.targetClientID &&
                 result.deletedObjects > 0) {
-                setInputObjectID('');
-                setSelectedObjectKey(null);
+                applyObjectFilter(EMPTY_OBJECT_FILTER);
             }
 
             setShowDeleteModal(false);
@@ -515,6 +545,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         refreshAfterAnnotationChange,
         inputObjectID,
         selectedObject,
+        applyObjectFilter,
     ]);
 
     const canUndoLastDeletion = Boolean(
@@ -755,14 +786,8 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                 parentObject = foundParent;
             }
         }
-        const targetKey = getObjectInputKey(parentObject);
-        setInputObjectID(targetKey);
-        setSelectedObjectKey(targetKey);
-        const parentLabel = getStateLabelName(parentObject);
-        if (parentLabel && !matchesLabelFilter(parentObject, selectedLabelFilter)) {
-            setSelectedLabelFilter(parentLabel);
-        }
-    }, [combinedStates, selectedLabelFilter]);
+        applyObjectFilter(enterIDFilter(getObjectInputKey(parentObject)));
+    }, [combinedStates, applyObjectFilter]);
 
     let batchStartFrame: number | string = hasValidFrames ? rangeStart : '-';
     let batchEndFrame: number | string = hasValidFrames ? rangeEnd : '-';
@@ -858,11 +883,10 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     <Select
                         size='small'
                         value={selectedLabelFilter}
-                        onChange={(val: string) => {
-                            setSelectedLabelFilter(val);
-                        }}
+                        onChange={(val: string) => applyObjectFilter(selectTypeFilter(val))}
                         style={{ width: 130 }}
-                        className='cvat-multiframe-type-select'
+                        className={`cvat-multiframe-type-select ${
+                            objectFilter.mode === 'type' ? 'cvat-multiframe-filter-active' : ''}`}
                         showSearch
                     >
                         <Select.Option value='all'>All Types</Select.Option>
@@ -873,29 +897,30 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         ))}
                     </Select>
 
+                    <Text type='secondary'>or</Text>
                     <Text strong>Object ID:</Text>
                     <Input
                         size='small'
                         placeholder='ID, track_N, id:N'
                         value={inputObjectID}
-                        onChange={(e) => {
-                            setInputObjectID(e.target.value);
-                            if (!e.target.value) {
-                                setSelectedObjectKey(null);
-                            }
-                        }}
+                        onChange={(e) => applyObjectFilter(enterIDFilter(e.target.value))}
                         allowClear
                         style={{ width: 120 }}
-                        className='cvat-multiframe-object-id-input'
+                        className={`cvat-multiframe-object-id-input ${
+                            objectFilter.mode === 'id' ? 'cvat-multiframe-filter-active' : ''}`}
                     />
+                    <Tag
+                        color={FILTER_MODE_COLORS[objectFilter.mode]}
+                        className='cvat-multiframe-filter-mode-tag'
+                    >
+                        {describeObjectFilter(objectFilter)}
+                    </Tag>
                     <Button
                         size='small'
-                        onClick={() => {
-                            setInputObjectID('');
-                            setSelectedObjectKey(null);
-                        }}
-                        disabled={!inputObjectID}
+                        onClick={() => applyObjectFilter(EMPTY_OBJECT_FILTER)}
+                        disabled={objectFilter.mode === 'none'}
                         className='cvat-multiframe-clear-id-btn'
+                        title='Clear the active filter'
                     >
                         Clear
                     </Button>
@@ -1091,6 +1116,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                                     jobInstance={jobInstance}
                                     isActiveFrame={frame === currentFrame}
                                     selectedObject={selectedObject}
+                                    typeFilterLabel={typeFilterLabel}
                                     autoZoomEnabled={autoZoomEnabled}
                                     autoFollowEnabled={autoFollowEnabled}
                                     isZoomedInPlace={isThisZoomed}
@@ -1180,6 +1206,17 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         )}
                     </div>
 
+                    <div style={{ marginBottom: 8 }}>
+                        <Text strong>Filter by Type or by Object ID (not both): </Text>
+                        <Tag
+                            color={FILTER_MODE_COLORS[deleteFilter.mode]}
+                            className='cvat-multiframe-delete-filter-mode-tag'
+                        >
+                            {deleteFilter.mode === 'none' ?
+                                'All objects in the range' : describeObjectFilter(deleteFilter)}
+                        </Tag>
+                    </div>
+
                     <div style={{ marginBottom: 16 }}>
                         <Text strong style={{ display: 'block', marginBottom: 6 }}>
                             Object Type (label):
@@ -1187,7 +1224,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         <Select
                             size='small'
                             value={deleteLabel}
-                            onChange={(val: string) => setDeleteLabel(val)}
+                            onChange={(val: string) => setDeleteFilter(selectTypeFilter(val))}
                             style={{ width: 180 }}
                             className='cvat-multiframe-delete-type-select'
                             disabled={isDeleting}
@@ -1204,14 +1241,14 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
 
                     <div style={{ marginBottom: 16 }}>
                         <Text strong style={{ display: 'block', marginBottom: 6 }}>
-                            Object ID (Optional):
+                            Object ID:
                         </Text>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <Input
                                 size='small'
-                                placeholder='Optional: 12, track_12, shape_12, id:12'
+                                placeholder='12, track_12, shape_12, id:12'
                                 value={deleteIDInput}
-                                onChange={(e) => setDeleteIDInput(e.target.value)}
+                                onChange={(e) => setDeleteFilter(enterIDFilter(e.target.value))}
                                 allowClear
                                 style={{ width: 220 }}
                                 className='cvat-multiframe-delete-id-input'
@@ -1227,6 +1264,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                             )}
                         </div>
                         <Text type='secondary' style={{ fontSize: 11, marginTop: 4, display: 'block' }}>
+                            Choosing a type clears the Object ID and entering an ID resets the type.
                             A Skeleton landmark ID targets its complete parent Skeleton.
                             Locked objects are never deleted.
                         </Text>

@@ -371,6 +371,171 @@ await test('Object ID: label mismatch, not found, invalid and removed objects', 
 });
 
 // ---------------------------------------------------------------------------
+// Object filter modes (Type mode and ID mode are mutually exclusive, read-only)
+// ---------------------------------------------------------------------------
+
+await test('Filter modes: Type mode and ID mode are mutually exclusive', () => {
+    assert.deepEqual(U.EMPTY_OBJECT_FILTER, { mode: 'none', label: 'all', idInput: '' });
+
+    const typeMode = U.selectTypeFilter('mattrai');
+    assert.deepEqual(typeMode, { mode: 'type', label: 'mattrai', idInput: '' });
+
+    // switching to ID mode resets the type
+    const idMode = U.enterIDFilter('track_10');
+    assert.deepEqual(idMode, { mode: 'id', label: 'all', idInput: 'track_10' });
+
+    // switching back to Type mode clears the ID
+    assert.deepEqual(U.selectTypeFilter('matphai'), { mode: 'type', label: 'matphai', idInput: '' });
+
+    // never both: every reachable state has at most one active filter
+    for (const st of [typeMode, idMode, U.selectTypeFilter('a'), U.enterIDFilter('12')]) {
+        assert.ok(!(st.label !== 'all' && st.idInput !== ''), JSON.stringify(st));
+    }
+});
+
+await test('Filter modes: "All Types" and an empty ID clear the filter', () => {
+    assert.deepEqual(U.selectTypeFilter('all'), U.EMPTY_OBJECT_FILTER);
+    assert.deepEqual(U.selectTypeFilter(''), U.EMPTY_OBJECT_FILTER);
+    assert.deepEqual(U.selectTypeFilter(null), U.EMPTY_OBJECT_FILTER);
+    assert.deepEqual(U.enterIDFilter(''), U.EMPTY_OBJECT_FILTER);
+    assert.deepEqual(U.enterIDFilter('   '), U.EMPTY_OBJECT_FILTER);
+    // the raw text is kept while typing in ID mode
+    assert.equal(U.enterIDFilter(' 12').idInput, ' 12');
+    // returned objects are fresh copies (no shared mutable state)
+    assert.notEqual(U.selectTypeFilter('all'), U.EMPTY_OBJECT_FILTER);
+});
+
+const frameA = [
+    {
+        clientID: 1, objectType: 'track', shapeType: 'skeleton', parentID: null, label: { name: 'mattrai' },
+        elements: [{ clientID: 2, parentID: 1, label: { id: 71, name: 'eye-corner' } }],
+    },
+    { clientID: 2, objectType: 'track', shapeType: 'points', parentID: 1, label: { name: 'mattrai' } },
+    {
+        clientID: 3, objectType: 'track', shapeType: 'skeleton', parentID: null, label: { name: 'matphai' },
+        elements: [],
+    },
+    {
+        clientID: 4, objectType: 'track', shapeType: 'skeleton', parentID: null, label: { name: 'mattrai' },
+        outside: true, elements: [],
+    },
+    { clientID: 5, objectType: 'shape', shapeType: 'rectangle', parentID: null, label: { name: 'a' } },
+    {
+        clientID: 6, objectType: 'shape', shapeType: 'rectangle', parentID: null, label: { name: 'mattrai' },
+        removed: true,
+    },
+];
+
+await test('Type mode: shows only visible top-level objects of the type, landmarks stay in their Skeleton', () => {
+    assert.deepEqual(U.getTypeFilterMatches(frameA, 'mattrai').map((s) => s.clientID), [1]);
+    assert.deepEqual(U.getTypeFilterMatches(frameA, 'matphai').map((s) => s.clientID), [3]);
+    assert.deepEqual(U.getTypeFilterMatches(frameA, 'a').map((s) => s.clientID), [5]);
+    // a frame without objects of the type reports no matches (shown as "None"), nothing is created
+    assert.deepEqual(U.getTypeFilterMatches(frameA, 'unknown'), []);
+    assert.deepEqual(U.getTypeFilterMatches(frameA, 'all'), []);
+    assert.deepEqual(U.getTypeFilterMatches(null, 'mattrai'), []);
+});
+
+await test('Type mode zoom: the view fits the union of all objects of the type on the frame', () => {
+    const states = [
+        { clientID: 1, objectType: 'shape', shapeType: 'rectangle', parentID: null, label: { name: 'eye' },
+            points: [100, 200, 150, 260] },
+        { clientID: 2, objectType: 'shape', shapeType: 'rectangle', parentID: null, label: { name: 'eye' },
+            points: [400, 210, 460, 250] },
+        { clientID: 3, objectType: 'shape', shapeType: 'rectangle', parentID: null, label: { name: 'mouth' },
+            points: [900, 900, 1000, 1000] },
+    ];
+    const before = JSON.stringify(states);
+    const matches = U.getTypeFilterMatches(states, 'eye');
+    const union = U.getTypeFilterBoundingBox(matches, states);
+    assert.deepEqual(union, { xtl: 100, ytl: 200, xbr: 460, ybr: 260 });
+
+    // the auto-zoom viewport contains every matched object and keeps the image aspect ratio
+    const vp = U.calculateAutoZoomViewport(union, 1920, 1080);
+    assert.ok(vp.x <= 100 && vp.y <= 200 && vp.x + vp.width >= 460 && vp.y + vp.height >= 260);
+    assert.ok(vp.width < 1920, 'the view is zoomed in');
+    assert.ok(Math.abs(vp.width / vp.height - 1920 / 1080) < 0.01, 'aspect ratio preserved');
+
+    // the object of another type is not part of the zoom target
+    assert.ok(union.xbr < 900);
+    // view only: annotation coordinates are unchanged
+    assert.equal(JSON.stringify(states), before);
+});
+
+await test('Type mode zoom: frames without objects of the type keep the full view', () => {
+    assert.equal(U.getTypeFilterBoundingBox([], []), null);
+    assert.equal(U.getTypeFilterBoundingBox(null, []), null);
+    // an object without measurable geometry is skipped
+    assert.equal(U.getTypeFilterBoundingBox([{ clientID: 9, shapeType: 'polygon', points: [] }], []), null);
+});
+
+await test('ID mode: CVAT identity is used, equal server IDs on other objects are not matched', () => {
+    const track = {
+        clientID: 1, serverID: 900, objectType: 'track', shapeType: 'skeleton', parentID: null,
+    };
+    // another frame: a different object that happens to share the server ID
+    const otherFrame = [{ clientID: 44, serverID: 900, objectType: 'shape', shapeType: 'skeleton', parentID: null }];
+    assert.equal(U.resolveCrossFrameIdentity(track, otherFrame).status, 'ABSENT_ON_FRAME');
+    assert.equal(U.resolveCrossFrameIdentity(track, frameA).status, 'MATCHED');
+    assert.equal(U.resolveCrossFrameIdentity(track, frameA).matchedClientID, 1);
+    // an outside track is reported as absent, not shown
+    assert.equal(U.resolveCrossFrameIdentity({ ...track, clientID: 4 }, frameA).status, 'ABSENT_ON_FRAME');
+});
+
+await test('ID mode: a landmark is matched only inside its own parent Skeleton', () => {
+    const landmark = { clientID: 2, objectType: 'track', parentID: 1, label: { id: 71 } };
+    const res = U.resolveCrossFrameIdentity(landmark, frameA);
+    assert.equal(res.status, 'MATCHED');
+    assert.equal(res.targetState.clientID, 1);
+    // the same sublabel inside a different Skeleton is never used
+    const otherSkeletonOnly = [{
+        clientID: 9, objectType: 'track', shapeType: 'skeleton', parentID: null,
+        elements: [{ clientID: 10, parentID: 9, label: { id: 71 } }],
+    }];
+    assert.equal(U.resolveCrossFrameIdentity(landmark, otherSkeletonOnly).status, 'SKELETON_ABSENT');
+});
+
+await test('ID mode: a shape is shown on its own frame and never linked to other frames', () => {
+    const shape = { clientID: 5, objectType: 'shape', shapeType: 'rectangle', parentID: null };
+    const own = U.resolveCrossFrameIdentity(shape, frameA);
+    assert.equal(own.status, 'MATCHED');
+    assert.equal(own.matchedClientID, 5);
+    const elsewhere = [{ clientID: 50, serverID: 5, objectType: 'shape', shapeType: 'rectangle', parentID: null }];
+    assert.equal(U.resolveCrossFrameIdentity(shape, elsewhere).status, 'NO_IDENTITY');
+    // a removed shape is not shown
+    const removed = { clientID: 6, objectType: 'shape', shapeType: 'rectangle', parentID: null };
+    assert.equal(U.resolveCrossFrameIdentity(removed, frameA).status, 'NO_IDENTITY');
+});
+
+await test('Filtering is read-only: annotation states are never modified', () => {
+    const before = JSON.stringify(frameA);
+    U.getTypeFilterMatches(frameA, 'mattrai');
+    U.resolveCrossFrameIdentity(frameA[0], frameA);
+    U.resolveCrossFrameIdentity({ clientID: 2, objectType: 'track', parentID: 1, label: { id: 71 } }, frameA);
+    U.resolveObjectByIDAndType('track_1', 'all', frameA);
+    assert.equal(JSON.stringify(frameA), before);
+});
+
+await test('Deletion in ID mode ignores the type, in Type mode ignores IDs', async () => {
+    const job = createJob();
+    const left = job.addShape({ frame: 3, shapeType: 'skeleton', label: 'mattrai' });
+    const right = job.addShape({ frame: 3, shapeType: 'skeleton', label: 'matphai' });
+    const idFilter = U.enterIDFilter(`shape_${right.clientID}`);
+    const resolved = U.resolveObjectByIDAndType(idFilter.idInput, 'all', await job.annotations.get(3));
+    const idPlan = await U.planAnnotationDeletion({
+        jobInstance: job, startFrame: 1, endFrame: 5, stopFrame: 30,
+        targetLabel: idFilter.label, targetClientID: resolved.resolvedID,
+    });
+    assert.deepEqual(idPlan.targets.map((t) => t.clientID), [right.clientID]);
+
+    const typeFilter = U.selectTypeFilter('mattrai');
+    const typePlan = await U.planAnnotationDeletion({
+        jobInstance: job, startFrame: 1, endFrame: 5, stopFrame: 30, targetLabel: typeFilter.label,
+    });
+    assert.deepEqual(typePlan.targets.map((t) => t.clientID), [left.clientID]);
+});
+
+// ---------------------------------------------------------------------------
 // Deletion
 // ---------------------------------------------------------------------------
 

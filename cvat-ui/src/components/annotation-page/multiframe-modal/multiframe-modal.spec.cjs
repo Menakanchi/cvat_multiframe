@@ -6108,7 +6108,7 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     );
 
     // Type / Object ID controls
-    assert.ok(workspaceSource.includes("className='cvat-multiframe-type-select'"), 'Type dropdown exists');
+    assert.ok(workspaceSource.includes('cvat-multiframe-type-select'), 'Type dropdown exists');
     assert.ok(
         workspaceSource.includes('jobLabels: state.annotation.job.labels') &&
         workspaceSource.includes('availableLabels.map(') && !workspaceSource.includes('ShapeType'),
@@ -6118,9 +6118,9 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         utilsSource.includes('if (!matchesLabelFilter(state, targetLabel)) continue;'),
         'Deletion filters objects by label',
     );
-    assert.ok(workspaceSource.includes("className='cvat-multiframe-object-id-input'"), 'Object ID input exists');
+    assert.ok(workspaceSource.includes('cvat-multiframe-object-id-input'), 'Object ID input exists');
     assert.ok(workspaceSource.includes("className='cvat-multiframe-clear-id-btn'"), 'Object ID has a Clear action');
-    assert.ok(workspaceSource.includes('setInputObjectID(getObjectInputKey('),
+    assert.ok(workspaceSource.includes('enterIDFilter(getObjectInputKey('),
         'Selecting an object fills an unambiguous ID (track_N / shape_N)');
 
     // Deletion: dry-run preview, mandatory confirmation, native history, refresh
@@ -6167,6 +6167,53 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     const tileRules = tileBlock.slice(0, tileBlock.indexOf('&:hover'));
     assert.ok(/isolation:\s*isolate;/.test(tileRules), 'Each tile creates its own stacking context');
     console.log('  ✔ TC 113 passed.');
+}
+
+// =========================================================================
+// TC 114: Type mode and ID mode are mutually exclusive (UI wiring)
+// Behaviour of the filter functions is covered by multiframe-utils.real.spec.mjs
+// =========================================================================
+{
+    console.log('TC 114: Exclusive Type / ID filter modes...');
+    const fs = require('fs');
+    const path = require('path');
+    const ws = fs.readFileSync(path.resolve(__dirname, 'multiframe-workspace-view.tsx'), 'utf8');
+    const tile = fs.readFileSync(path.resolve(__dirname, 'multiframe-tile.tsx'), 'utf8');
+    const overlay = fs.readFileSync(path.resolve(__dirname, 'multiframe-svg-overlay.tsx'), 'utf8');
+
+    // one filter state for the viewer and one for the deletion modal
+    assert.ok(ws.includes('useState<ObjectFilterState>(EMPTY_OBJECT_FILTER)'), 'Viewer keeps a single filter state');
+    assert.ok(!/useState<string>\('all'\)/.test(ws), 'No separate type state that could combine with the ID');
+    assert.ok(ws.includes('applyObjectFilter(selectTypeFilter(val))'), 'Selecting a type switches to Type mode');
+    assert.ok(ws.includes('applyObjectFilter(enterIDFilter(e.target.value))'), 'Typing an ID switches to ID mode');
+    assert.ok(ws.includes("resolveObjectByIDAndType(inputObjectID, 'all', combinedStates)"),
+        'ID mode never applies the type');
+    assert.ok(ws.includes("if (objectFilter.mode !== 'id') return null;"), 'A selected object exists only in ID mode');
+    assert.ok(ws.includes("const typeFilterLabel = objectFilter.mode === 'type' ? objectFilter.label : null;"),
+        'Type mode label is passed only in Type mode');
+    assert.ok(ws.includes("className='cvat-multiframe-filter-mode-tag'"), 'Active filter mode is shown');
+    assert.ok(ws.includes('cvat-multiframe-filter-active'), 'Active control is highlighted');
+    assert.ok(ws.includes('typeFilterLabel={typeFilterLabel}'), 'Tiles receive the Type mode label');
+
+    // deletion modal uses the same exclusive modes
+    assert.ok(ws.includes('setDeleteFilter(selectTypeFilter(val))') &&
+        ws.includes('setDeleteFilter(enterIDFilter(e.target.value))'), 'Deletion modal switches modes');
+    assert.ok(ws.includes("resolveObjectByIDAndType(deleteIDInput, 'all', combinedStates)"),
+        'Deletion ID is resolved without the type');
+
+    // tiles: read-only display of the type matches and a clear indicator for frames without matches
+    assert.ok(tile.includes('getTypeFilterMatches(frameStates, typeFilterLabel)'), 'Tile computes type matches');
+    assert.ok(tile.includes("className='cvat-multiframe-type-match-tag'"), 'Tile shows the type match count / None');
+    assert.ok(tile.includes('typeMatchedClientIDs={typeMatchedClientIDs}'), 'Overlay receives the type matches');
+    assert.ok(overlay.includes('typeMatches ? typeMatches.has(state.clientID)'), 'Overlay highlights type matches');
+    // Type mode zooms / follows like ID mode, using the union box of the matched objects
+    assert.ok(tile.includes('if (typeMatches) return getTypeFilterBoundingBox(typeMatches, frameStates);'),
+        'Type mode uses the union box of its matches as the zoom target');
+    assert.ok(tile.includes('calculateAutoZoomViewport(bbox, dimensions.width, dimensions.height)') &&
+        tile.includes('centerViewportOnObject(manualViewport, focusBBox'), 'Auto-zoom and auto-follow use the focus box');
+    assert.ok(tile.includes('[selectedObject, typeFilterLabel, autoZoomEnabled, autoFollowEnabled]'),
+        'Changing the type resets manual zoom');
+    console.log('  ✔ TC 114 passed.');
 }
 
 console.log('\n=== All Real Multi-Frame Viewer Tests Passed Successfully! ===');

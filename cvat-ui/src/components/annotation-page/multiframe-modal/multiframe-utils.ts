@@ -206,8 +206,23 @@ export function resolveCrossFrameIdentity(
         };
     }
 
-    // Constraint 6: Standalone shapes are never matched across frames
+    // Constraint 6: Standalone shapes are never matched across frames.
+    // A shape is only shown on its own frame, where the same CVAT object (clientID + objectType) exists.
     if (selectedState.objectType !== 'track') {
+        const sameShape = selectedState.objectType === 'shape' &&
+            (selectedState.parentID === null || selectedState.parentID === undefined) ?
+            targetFrameStates.find((state) => (
+                state && !state.removed && state.objectType === 'shape' && state.clientID === selectedState.clientID
+            )) : null;
+        if (sameShape) {
+            return {
+                status: 'MATCHED',
+                targetState: sameShape,
+                targetElementState: null,
+                matchedClientID: sameShape.clientID,
+                isOccluded: Boolean(sameShape.occluded),
+            };
+        }
         return {
             status: 'NO_IDENTITY', targetState: null, targetElementState: null, matchedClientID: null,
         };
@@ -1327,6 +1342,68 @@ export function getStateLabelName(state: any): string {
 /** 'all' (or empty) matches every object, otherwise the object label name must be equal */
 export function matchesLabelFilter(state: any, labelFilter: string | null | undefined): boolean {
     return !labelFilter || labelFilter === 'all' || getStateLabelName(state) === labelFilter;
+}
+
+// ---------------------------------------------------------------------------
+// Object filter: Type mode and ID mode are mutually exclusive (read-only, view only)
+// ---------------------------------------------------------------------------
+
+export type ObjectFilterMode = 'none' | 'type' | 'id';
+
+export interface ObjectFilterState {
+    mode: ObjectFilterMode;
+    /** label name (object type) in Type mode, otherwise 'all' */
+    label: string;
+    /** raw Object ID input in ID mode, otherwise '' */
+    idInput: string;
+}
+
+export const EMPTY_OBJECT_FILTER: ObjectFilterState = { mode: 'none', label: 'all', idInput: '' };
+
+/** Selecting a type switches to Type mode and clears the Object ID. "All Types" clears the filter. */
+export function selectTypeFilter(label: string | null | undefined): ObjectFilterState {
+    if (!label || label === 'all') return { ...EMPTY_OBJECT_FILTER };
+    return { mode: 'type', label, idInput: '' };
+}
+
+/** Entering an Object ID switches to ID mode and resets the type. An empty input clears the filter. */
+export function enterIDFilter(idInput: string | null | undefined): ObjectFilterState {
+    const value = typeof idInput === 'string' ? idInput : '';
+    if (!value.trim()) return { ...EMPTY_OBJECT_FILTER };
+    return { mode: 'id', label: 'all', idInput: value };
+}
+
+/**
+ * Type mode: visible top-level objects of the given label on one frame.
+ * Skeleton landmarks are never returned on their own, they are shown as part of their parent Skeleton.
+ */
+export function getTypeFilterMatches(frameStates: any[], label: string): any[] {
+    if (!label || label === 'all' || !Array.isArray(frameStates)) return [];
+    return frameStates.filter((state) => (
+        state && !state.removed && !state.outside && !hasParent(state) && getStateLabelName(state) === label
+    ));
+}
+
+/**
+ * Type mode auto-zoom / auto-follow target: the union of the bounding boxes of all matched objects
+ * on one frame (a Skeleton uses its complete wrapping box). Returns null when nothing can be measured.
+ * View only: the states are never modified.
+ */
+export function getTypeFilterBoundingBox(matches: any[], allFrameStates?: any[]): BBox | null {
+    if (!Array.isArray(matches) || matches.length === 0) return null;
+    let union: BBox | null = null;
+    for (const state of matches) {
+        const bbox = getObjectBoundingBox(state, null, allFrameStates);
+        if (bbox && [bbox.xtl, bbox.ytl, bbox.xbr, bbox.ybr].every(Number.isFinite)) {
+            union = union ? {
+                xtl: Math.min(union.xtl, bbox.xtl),
+                ytl: Math.min(union.ytl, bbox.ytl),
+                xbr: Math.max(union.xbr, bbox.xbr),
+                ybr: Math.max(union.ybr, bbox.ybr),
+            } : { ...bbox };
+        }
+    }
+    return union;
 }
 
 /**
