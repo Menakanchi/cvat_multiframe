@@ -2,7 +2,9 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useCallback, useMemo, useEffect, useState, useRef } from 'react';
+import React, {
+    useCallback, useMemo, useEffect, useState, useRef,
+} from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import Button from 'antd/lib/button';
 import Text from 'antd/lib/typography/Text';
@@ -27,9 +29,7 @@ import {
 } from '@ant-design/icons';
 
 import { CombinedState } from 'reducers';
-import { ShapeType } from 'cvat-core-wrapper';
 import {
-    switchShowMultiframeModal,
     changeFrameAsync,
     saveAnnotationsAsync,
     fetchAnnotationsAsync,
@@ -45,6 +45,8 @@ import {
     calculateExpandedFitDimensions,
     resolveObjectByIDAndType,
     getObjectInputKey,
+    matchesLabelFilter,
+    getStateLabelName,
     planAnnotationDeletion,
     executeAnnotationDeletion,
     canUndoDeletionBatch,
@@ -80,8 +82,6 @@ function describeDeletionTarget(target: DeletionTarget, plan: DeletionPlan): str
     return `${prefix}hide only in frames #${plan.startFrame}-#${plan.endFrame} ` +
         `(visible on ${target.frames.length} frame(s)); frames outside the range are kept`;
 }
-// Actual CVAT shape types (cvat-core ShapeType enum)
-const CVAT_SHAPE_TYPES: string[] = Object.values(ShapeType) as string[];
 // Outer border of a zoomed-in-place tile (2.5px on each side), see styles.scss
 const ZOOMED_TILE_CHROME = 5;
 // Grid padding (2px on each side), see styles.scss
@@ -95,7 +95,9 @@ interface Props {
 }
 
 function MultiframeWorkspaceView(props: Props): JSX.Element {
-    const { onClose, initialStartFrame, initialEndFrame, initialFrameCount } = props;
+    const {
+        onClose, initialStartFrame, initialEndFrame, initialFrameCount,
+    } = props;
     const dispatch = useDispatch();
 
     const {
@@ -105,6 +107,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         activatedElementID,
         activeFrameStates,
         frameNumbers,
+        jobLabels,
         isSaving,
     } = useSelector((state: CombinedState) => ({
         jobInstance: state.annotation.job.instance,
@@ -113,6 +116,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         activatedElementID: state.annotation.annotations.activatedElementID,
         activeFrameStates: state.annotation.annotations.states,
         frameNumbers: state.annotation.job.frameNumbers,
+        jobLabels: state.annotation.job.labels,
         isSaving: state.annotation.annotations.saving.uploading,
     }), shallowEqual);
 
@@ -134,7 +138,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
 
     // Object Selector & Auto-Zoom State
     const [selectedObjectKey, setSelectedObjectKey] = useState<string | null>(null);
-    const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>('all');
+    const [selectedLabelFilter, setSelectedLabelFilter] = useState<string>('all');
     const [autoZoomEnabled, setAutoZoomEnabled] = useState<boolean>(true);
     const [autoFollowEnabled, setAutoFollowEnabled] = useState<boolean>(true);
     const [focusModeEnabled, setFocusModeEnabled] = useState<boolean>(false);
@@ -200,19 +204,26 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     }, [allJobStates, activeFrameStates]);
 
     // Extract deduplicated selectable objects across known states
-    const selectableObjects = useMemo<SelectableObject[]>(() => {
-        return extractSelectableObjects(combinedStates);
-    }, [combinedStates]);
+    const selectableObjects = useMemo<SelectableObject[]>(() => (
+        extractSelectableObjects(combinedStates)
+    ), [combinedStates]);
 
-    // Available shape types for filtering: the actual CVAT shape types
-    const availableTypes = CVAT_SHAPE_TYPES;
+    // Object types for filtering: the job labels (e.g. "mattrai", "matphai").
+    // Skeleton sublabels are not listed, landmarks always belong to their parent Skeleton.
+    const availableLabels = useMemo<string[]>(() => {
+        const names = new Set<string>();
+        for (const label of (Array.isArray(jobLabels) ? jobLabels : [])) {
+            if (label && typeof label.name === 'string' && label.name) names.add(label.name);
+        }
+        return Array.from(names);
+    }, [jobLabels]);
 
     // Object ID input and resolution
     const [inputObjectID, setInputObjectID] = useState<string>('');
 
     const idResolution = useMemo(() => (
-        resolveObjectByIDAndType(inputObjectID, selectedTypeFilter, combinedStates)
-    ), [inputObjectID, selectedTypeFilter, combinedStates]);
+        resolveObjectByIDAndType(inputObjectID, selectedLabelFilter, combinedStates)
+    ), [inputObjectID, selectedLabelFilter, combinedStates]);
 
     // Resolve the active selected object instance
     const selectedObject = useMemo(() => {
@@ -221,12 +232,12 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         }
         if (selectedObjectKey) {
             const matched = selectableObjects.find((o) => o.key === selectedObjectKey);
-            if (matched && (selectedTypeFilter === 'all' || matched.shapeType === selectedTypeFilter)) {
+            if (matched && matchesLabelFilter(matched.sourceState, selectedLabelFilter)) {
                 return matched.sourceState;
             }
         }
         return null;
-    }, [idResolution, selectedObjectKey, selectableObjects, selectedTypeFilter]);
+    }, [idResolution, selectedObjectKey, selectableObjects, selectedLabelFilter]);
 
     // Clear selection if selected object is removed / no longer exists
     useEffect(() => {
@@ -252,7 +263,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                 ));
             }
             if (match) {
-                const parentID = match.parentID;
+                const { parentID } = match;
                 if (parentID !== null && parentID !== undefined) {
                     const parent = combinedStates.find((o) => o.clientID === parentID);
                     if (parent) match = parent;
@@ -310,7 +321,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const [showDeleteModal, setShowDeleteModal] = useState<boolean>(false);
     const [deleteStartFrame, setDeleteStartFrame] = useState<number | null>(null);
     const [deleteEndFrame, setDeleteEndFrame] = useState<number | null>(null);
-    const [deleteType, setDeleteType] = useState<string>('all');
+    const [deleteLabel, setDeleteLabel] = useState<string>('all');
     const [deleteIDInput, setDeleteIDInput] = useState<string>('');
     const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
     const [isDeleting, setIsDeleting] = useState<boolean>(false);
@@ -364,12 +375,12 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const handleOpenDeleteModal = useCallback(() => {
         setDeleteStartFrame(rangeStart);
         setDeleteEndFrame(rangeEnd);
-        setDeleteType(selectedTypeFilter);
+        setDeleteLabel(selectedLabelFilter);
         setDeleteIDInput(inputObjectID);
         setConfirmDelete(false);
         setDeletionPlan(null);
         setShowDeleteModal(true);
-    }, [rangeStart, rangeEnd, selectedTypeFilter, inputObjectID]);
+    }, [rangeStart, rangeEnd, selectedLabelFilter, inputObjectID]);
 
     const deleteValidation = validateFrameRange(
         deleteStartFrame,
@@ -380,8 +391,8 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     );
 
     const deleteIDResolution = useMemo(() => (
-        resolveObjectByIDAndType(deleteIDInput, deleteType, combinedStates)
-    ), [deleteIDInput, deleteType, combinedStates]);
+        resolveObjectByIDAndType(deleteIDInput, deleteLabel, combinedStates)
+    ), [deleteIDInput, deleteLabel, combinedStates]);
 
     const hasDeleteID = Boolean(deleteIDInput.trim());
     const deleteIDIsUsable = !hasDeleteID || deleteIDResolution.status === 'VALID';
@@ -405,11 +416,11 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     startFrame: deleteStartFrame,
                     endFrame: deleteEndFrame,
                     stopFrame: jobStopFrame,
-                    targetType: deleteType,
+                    targetLabel: deleteLabel,
                     targetClientID: hasDeleteID ? deleteIDResolution.resolvedID : null,
                 });
                 if (!cancelled) setDeletionPlan(plan);
-            } catch (err: any) {
+            } catch (_err: any) {
                 if (!cancelled) setDeletionPlan(null);
             } finally {
                 if (!cancelled) setIsPlanning(false);
@@ -426,7 +437,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         deleteIDIsUsable,
         deleteStartFrame,
         deleteEndFrame,
-        deleteType,
+        deleteLabel,
         hasDeleteID,
         deleteIDResolution.resolvedID,
         jobInstance,
@@ -625,11 +636,9 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         }, 50);
     }, [zoomedFrame]);
 
-    const handleRestoreGrid = handleResetLayout;
-
     // Escape key restores layout when zoomed in place or expanded
     useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
+        const handleKeyDown = (e: KeyboardEvent): void => {
             if (e.key === 'Escape') {
                 if (zoomedFrame !== null || Object.keys(tileLayoutSizes).length > 0 || expandedFrame !== null) {
                     handleResetLayout();
@@ -685,7 +694,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         let lastColSpan = initialColSpan;
         let lastMinHeight = initialMinHeight;
 
-        const onMouseMove = (moveEvent: MouseEvent) => {
+        const onMouseMove = (moveEvent: MouseEvent): void => {
             const dx = moveEvent.clientX - startX;
             const dy = moveEvent.clientY - startY;
 
@@ -714,7 +723,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
             window.dispatchEvent(new Event('resize'));
         };
 
-        const onMouseUp = () => {
+        const onMouseUp = (): void => {
             setIsExpanding(false);
             setExpandedFrame(null);
             document.body.style.cursor = originalCursor;
@@ -738,7 +747,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
 
     const handleTileSelectObject = useCallback((targetState: any) => {
         if (!targetState) return;
-        const parentID = targetState.parentID;
+        const { parentID } = targetState;
         let parentObject = targetState;
         if (parentID !== null && parentID !== undefined) {
             const foundParent = combinedStates.find((st: any) => st.clientID === parentID);
@@ -749,13 +758,20 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         const targetKey = getObjectInputKey(parentObject);
         setInputObjectID(targetKey);
         setSelectedObjectKey(targetKey);
-        if (parentObject.shapeType && selectedTypeFilter !== 'all' && parentObject.shapeType !== selectedTypeFilter) {
-            setSelectedTypeFilter(parentObject.shapeType);
+        const parentLabel = getStateLabelName(parentObject);
+        if (parentLabel && !matchesLabelFilter(parentObject, selectedLabelFilter)) {
+            setSelectedLabelFilter(parentLabel);
         }
-    }, [combinedStates, selectedTypeFilter]);
+    }, [combinedStates, selectedLabelFilter]);
 
-    const batchStartFrame = batchFrames.length > 0 ? batchFrames[0] : (hasValidFrames ? rangeStart : '-');
-    const batchEndFrame = batchFrames.length > 0 ? batchFrames[batchFrames.length - 1] : (hasValidFrames ? rangeEnd : '-');
+    let batchStartFrame: number | string = hasValidFrames ? rangeStart : '-';
+    let batchEndFrame: number | string = hasValidFrames ? rangeEnd : '-';
+    if (batchFrames.length > 0) {
+        [batchStartFrame] = batchFrames;
+        batchEndFrame = batchFrames[batchFrames.length - 1];
+    }
+    const batchIndicator = `Batch ${totalBatches === 0 ? 0 : batchIndex + 1} of ${Math.max(1, totalBatches)} ` +
+        `(Frames #${batchStartFrame} - #${batchEndFrame})`;
 
     return (
         <div className={`cvat-multiframe-workspace-view ${zoomedFrame !== null ? 'cvat-multiframe-workspace-has-zoomed' : ''}`}>
@@ -823,7 +839,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         Prev Batch
                     </Button>
                     <Text strong className='cvat-multiframe-batch-indicator'>
-                        {`Batch ${totalBatches === 0 ? 0 : batchIndex + 1} of ${Math.max(1, totalBatches)} (Frames #${batchStartFrame} - #${batchEndFrame})`}
+                        {batchIndicator}
                     </Text>
                     <Button
                         size='small'
@@ -841,17 +857,18 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     <Text strong>Type:</Text>
                     <Select
                         size='small'
-                        value={selectedTypeFilter}
+                        value={selectedLabelFilter}
                         onChange={(val: string) => {
-                            setSelectedTypeFilter(val);
+                            setSelectedLabelFilter(val);
                         }}
-                        style={{ width: 110 }}
+                        style={{ width: 130 }}
                         className='cvat-multiframe-type-select'
+                        showSearch
                     >
                         <Select.Option value='all'>All Types</Select.Option>
-                        {availableTypes.map((type) => (
-                            <Select.Option key={type} value={type}>
-                                {type.charAt(0).toUpperCase() + type.slice(1)}
+                        {availableLabels.map((name) => (
+                            <Select.Option key={name} value={name}>
+                                {name}
                             </Select.Option>
                         ))}
                     </Select>
@@ -994,24 +1011,27 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
             )}
 
             {/* Multi-Frame Grid of Tiles or Loading State */}
-            {!hasValidFrames ? (
+            {!hasValidFrames && (
                 <div style={{ padding: 40, textAlign: 'center', width: '100%' }}>
                     <Spin size='large' />
                     <div style={{ marginTop: 16 }}>
                         <Text type='secondary'>Loading job frame numbers...</Text>
                     </div>
                 </div>
-            ) : batchFrames.length === 0 ? (
+            )}
+            {hasValidFrames && batchFrames.length === 0 && (
                 <div style={{ padding: 40, textAlign: 'center', width: '100%' }}>
                     <Text type='secondary'>No valid frames found in range [{rangeStart} .. {rangeEnd}].</Text>
                 </div>
-            ) : (
+            )}
+            {hasValidFrames && batchFrames.length > 0 && (
                 <div
                     ref={setGridRef}
                     className={`cvat-multiframe-grid ${focusModeEnabled ? 'cvat-multiframe-grid-focus-mode' : ''}`}
                     style={{
                         position: 'relative',
-                        gridTemplateColumns: batchFrames.length < 4 ? `repeat(${Math.max(1, batchFrames.length)}, 1fr)` : undefined,
+                        gridTemplateColumns: batchFrames.length < 4 ?
+                            `repeat(${Math.max(1, batchFrames.length)}, 1fr)` : undefined,
                     }}
                 >
                     {batchFrames.map((frame) => {
@@ -1046,8 +1066,14 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                                 zIndex: 10,
                             };
                         } else if (layoutSize) {
+                            let gridColumn: string | undefined;
+                            if (layoutSize.colSpan >= 4) {
+                                gridColumn = '1 / -1';
+                            } else if (layoutSize.colSpan > 1) {
+                                gridColumn = `span ${layoutSize.colSpan}`;
+                            }
                             tileStyle = {
-                                gridColumn: layoutSize.colSpan >= 4 ? '1 / -1' : (layoutSize.colSpan > 1 ? `span ${layoutSize.colSpan}` : undefined),
+                                gridColumn,
                                 minHeight: `${layoutSize.minHeight}px`,
                                 zIndex: layoutSize.colSpan > 1 ? 5 : undefined,
                             };
@@ -1156,20 +1182,21 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
 
                     <div style={{ marginBottom: 16 }}>
                         <Text strong style={{ display: 'block', marginBottom: 6 }}>
-                            Object Shape Type:
+                            Object Type (label):
                         </Text>
                         <Select
                             size='small'
-                            value={deleteType}
-                            onChange={(val: string) => setDeleteType(val)}
+                            value={deleteLabel}
+                            onChange={(val: string) => setDeleteLabel(val)}
                             style={{ width: 180 }}
                             className='cvat-multiframe-delete-type-select'
                             disabled={isDeleting}
+                            showSearch
                         >
                             <Select.Option value='all'>All Types</Select.Option>
-                            {availableTypes.map((type) => (
-                                <Select.Option key={type} value={type}>
-                                    {type.charAt(0).toUpperCase() + type.slice(1)}
+                            {availableLabels.map((name) => (
+                                <Select.Option key={name} value={name}>
+                                    {name}
                                 </Select.Option>
                             ))}
                         </Select>

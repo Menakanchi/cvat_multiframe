@@ -106,10 +106,6 @@
     padding: 2px;
     min-height: 0;
 
-    &.cvat-multiframe-grid-has-expanded {
-        overflow: hidden;
-    }
-
     &.cvat-multiframe-grid-focus-mode {
         .cvat-multiframe-tile {
             opacity: 0.35;
@@ -117,8 +113,7 @@
 
             &:hover,
             &.cvat-multiframe-tile-active,
-            &.cvat-multiframe-tile-zoomed,
-            &.cvat-multiframe-tile-expanded {
+            &.cvat-multiframe-tile-zoomed {
                 opacity: 1;
             }
         }
@@ -188,6 +183,9 @@
     min-height: 160px;
     height: 100%;
     opacity: 1;
+    // Own stacking context: header / resize handle z-indexes of a tile stay inside it,
+    // so they never show through a zoomed or expanded tile on top
+    isolation: isolate;
 
     &:hover {
         border-color: #1890ff;

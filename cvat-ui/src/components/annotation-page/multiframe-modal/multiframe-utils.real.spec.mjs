@@ -317,10 +317,12 @@ await test('Object ID: strict parsing', () => {
 });
 
 const skeleton = {
-    clientID: 10, serverID: 5, objectType: 'track', shapeType: 'skeleton', parentID: null,
+    clientID: 10, serverID: 5, objectType: 'track', shapeType: 'skeleton', parentID: null, label: { name: 'mattrai' },
     elements: [{ clientID: 11, serverID: 1011, parentID: 10 }, { clientID: 12, serverID: 1012, parentID: 10 }],
 };
-const rect = { clientID: 5, serverID: 77, objectType: 'shape', shapeType: 'rectangle', parentID: null };
+const rect = {
+    clientID: 5, serverID: 77, objectType: 'shape', shapeType: 'rectangle', parentID: null, label: { name: 'car' },
+};
 const removedPoly = {
     clientID: 30, serverID: 300, objectType: 'shape', shapeType: 'polygon', parentID: null, removed: true,
 };
@@ -333,9 +335,10 @@ await test('Object ID: ambiguous client/server IDs are detected', () => {
     assert.equal(res.candidates.length, 2);
 });
 
-await test('Object ID: ambiguity resolved by type filter or explicit prefix', () => {
-    assert.equal(U.resolveObjectByIDAndType('5', 'rectangle', states).resolvedID, 5);
-    assert.equal(U.resolveObjectByIDAndType('5', 'skeleton', states).resolvedID, 10);
+await test('Object ID: ambiguity resolved by label (object type) filter or explicit prefix', () => {
+    assert.equal(U.resolveObjectByIDAndType('5', 'car', states).resolvedID, 5);
+    assert.equal(U.resolveObjectByIDAndType('5', 'mattrai', states).resolvedID, 10);
+    assert.equal(U.resolveObjectByIDAndType('5', 'mattrai', states).message, 'track_10 (server ID 5) [mattrai, Skeleton]');
     assert.equal(U.resolveObjectByIDAndType('shape_5', 'all', states).resolvedID, 5);
     assert.equal(U.resolveObjectByIDAndType('id:5', 'all', states).resolvedID, 10);
     assert.equal(U.resolveObjectByIDAndType('track_5', 'all', states).status, 'NOT_FOUND');
@@ -351,11 +354,15 @@ await test('Object ID: Skeleton landmark IDs resolve to the parent Skeleton', ()
     }
     // flattened child states also resolve to the parent
     const flat = [...states, { clientID: 11, serverID: 1011, parentID: 10, shapeType: 'points' }];
-    assert.equal(U.resolveObjectByIDAndType('11', 'skeleton', flat).resolvedID, 10);
+    assert.equal(U.resolveObjectByIDAndType('11', 'mattrai', flat).resolvedID, 10);
 });
 
-await test('Object ID: type mismatch, not found, invalid and removed objects', () => {
-    assert.equal(U.resolveObjectByIDAndType('10', 'rectangle', states).status, 'TYPE_MISMATCH');
+await test('Object ID: label mismatch, not found, invalid and removed objects', () => {
+    const mismatch = U.resolveObjectByIDAndType('10', 'matphai', states);
+    assert.equal(mismatch.status, 'LABEL_MISMATCH');
+    assert.equal(mismatch.message, 'ID 10 is mattrai, but the type filter is matphai');
+    // shape type names are not object types
+    assert.equal(U.resolveObjectByIDAndType('10', 'skeleton', states).status, 'LABEL_MISMATCH');
     assert.equal(U.resolveObjectByIDAndType('999', 'all', states).status, 'NOT_FOUND');
     assert.equal(U.resolveObjectByIDAndType('12abc', 'all', states).status, 'INVALID');
     assert.equal(U.resolveObjectByIDAndType('30', 'all', states).status, 'NOT_FOUND');
@@ -373,11 +380,11 @@ await test('Deletion: only matching shapes inside the inclusive range; locked sk
     const r6 = job.addShape({ frame: 6, shapeType: 'rectangle' });
     const r7 = job.addShape({ frame: 7, shapeType: 'rectangle' });
     const r4 = job.addShape({ frame: 4, shapeType: 'rectangle' });
-    const poly = job.addShape({ frame: 5, shapeType: 'polygon' });
+    const poly = job.addShape({ frame: 5, shapeType: 'polygon', label: 'bus' });
     const locked = job.addShape({ frame: 6, shapeType: 'rectangle', lock: true });
 
     const plan = await U.planAnnotationDeletion({
-        jobInstance: job, startFrame: 5, endFrame: 6, stopFrame: 30, targetType: 'rectangle',
+        jobInstance: job, startFrame: 5, endFrame: 6, stopFrame: 30, targetLabel: 'car',
     });
     assert.equal(plan.isValid, true);
     assert.deepEqual(plan.targets.map((t) => t.clientID), [r5.clientID, r6.clientID]);
@@ -402,7 +409,7 @@ await test('Deletion: a track visible outside the range is hidden ONLY inside th
     const before = snapshot(job, ALL_FRAMES);
 
     const plan = await U.planAnnotationDeletion({
-        jobInstance: job, startFrame: 3, endFrame: 6, stopFrame: 30, targetType: 'all',
+        jobInstance: job, startFrame: 3, endFrame: 6, stopFrame: 30, targetLabel: 'all',
     });
     assert.equal(plan.targets.length, 1);
     assert.equal(plan.targets[0].mode, 'hide-track-range');
@@ -446,7 +453,7 @@ await test('Deletion: keyframes inside the range are hidden too (no reappearing 
         },
     });
     const plan = await U.planAnnotationDeletion({
-        jobInstance: job, startFrame: 2, endFrame: 8, stopFrame: 30, targetType: 'rectangle',
+        jobInstance: job, startFrame: 2, endFrame: 8, stopFrame: 30, targetLabel: 'person',
     });
     assert.equal(plan.targets[0].historySteps, 4); // freeze 9 + outside at 2, 4, 6
     const result = await U.executeAnnotationDeletion(job, plan);
@@ -470,7 +477,7 @@ await test('Deletion: polygon tracks report frames whose non-linear interpolatio
         shapes: { 0: { points: [0, 0, 1, 1], outside: false }, 20: { points: [5, 0, 6, 1], outside: false } },
     });
     const plan = await U.planAnnotationDeletion({
-        jobInstance: job, startFrame: 5, endFrame: 8, stopFrame: 30, targetType: 'all',
+        jobInstance: job, startFrame: 5, endFrame: 8, stopFrame: 30, targetLabel: 'all',
     });
     const polygon = plan.targets.find((t) => t.shapeType === 'polygon');
     const rectangle = plan.targets.find((t) => t.shapeType === 'rectangle');
@@ -485,7 +492,7 @@ await test('Deletion: a track visible only inside the range is deleted as one ob
         shapes: { 5: { points: [0, 0, 1, 1], outside: false }, 9: { points: [0, 0, 1, 1], outside: true } },
     });
     const plan = await U.planAnnotationDeletion({
-        jobInstance: job, startFrame: 4, endFrame: 10, stopFrame: 30, targetType: 'all',
+        jobInstance: job, startFrame: 4, endFrame: 10, stopFrame: 30, targetLabel: 'all',
     });
     assert.equal(plan.targets[0].mode, 'delete-track');
     const result = await U.executeAnnotationDeletion(job, plan);
@@ -507,7 +514,7 @@ await test('Deletion: locked tracks and outside states are not targeted', async 
     });
     const before = snapshot(job, ALL_FRAMES);
     const plan = await U.planAnnotationDeletion({
-        jobInstance: job, startFrame: 5, endFrame: 8, stopFrame: 30, targetType: 'all',
+        jobInstance: job, startFrame: 5, endFrame: 8, stopFrame: 30, targetLabel: 'all',
     });
     assert.equal(plan.targets.length, 0);
     assert.equal(plan.isValid, false);
@@ -535,7 +542,7 @@ await test('Deletion: Skeleton by landmark ID deletes the whole Skeleton, never 
         startFrame: 5,
         endFrame: 5,
         stopFrame: 30,
-        targetType: 'all',
+        targetLabel: 'all',
         targetClientID: resolved.resolvedID,
     });
     assert.deepEqual(plan.targets.map((t) => t.clientID), [sk.clientID]);
@@ -547,10 +554,10 @@ await test('Deletion: Skeleton by landmark ID deletes the whole Skeleton, never 
 await test('Deletion: Skeleton track hidden in range uses 2 steps for the keyframe freeze', async () => {
     const job = createJob();
     const skTrack = job.addTrack({
-        shapeType: 'skeleton', shapes: { 0: { points: [0, 0], outside: false } },
+        shapeType: 'skeleton', label: 'mattrai', shapes: { 0: { points: [0, 0], outside: false } },
     });
     const plan = await U.planAnnotationDeletion({
-        jobInstance: job, startFrame: 10, endFrame: 12, stopFrame: 30, targetType: 'skeleton',
+        jobInstance: job, startFrame: 10, endFrame: 12, stopFrame: 30, targetLabel: 'mattrai',
     });
     assert.equal(plan.targets[0].mode, 'hide-track-range');
     assert.equal(plan.totalHistorySteps, 3);
@@ -570,7 +577,7 @@ await test('Deletion: refuses plans that cannot be fully undone (CVAT keeps 32 s
         job.addShape({ frame: f, shapeType: 'rectangle' });
     }
     const plan = await U.planAnnotationDeletion({
-        jobInstance: job, startFrame: 0, endFrame: 20, stopFrame: 30, targetType: 'rectangle',
+        jobInstance: job, startFrame: 0, endFrame: 20, stopFrame: 30, targetLabel: 'car',
     });
     assert.equal(plan.totalHistorySteps, 42);
     assert.equal(plan.exceedsHistoryLimit, true);
@@ -580,9 +587,29 @@ await test('Deletion: refuses plans that cannot be fully undone (CVAT keeps 32 s
     assert.ok(job.objects.every((o) => !o.removed));
 });
 
+await test('Deletion: the label filter targets only objects of that object type', async () => {
+    const job = createJob();
+    const left = job.addShape({ frame: 3, shapeType: 'skeleton', label: 'mattrai' });
+    const right = job.addShape({ frame: 3, shapeType: 'skeleton', label: 'matphai' });
+    const box = job.addShape({ frame: 3, shapeType: 'rectangle', label: 'a' });
+    const plan = await U.planAnnotationDeletion({
+        jobInstance: job, startFrame: 1, endFrame: 5, stopFrame: 30, targetLabel: 'mattrai',
+    });
+    assert.deepEqual(plan.targets.map((t) => t.clientID), [left.clientID]);
+    assert.equal(plan.targetLabel, 'mattrai');
+    await U.executeAnnotationDeletion(job, plan);
+    assert.equal(left.removed, true);
+    assert.equal(right.removed, false);
+    assert.equal(box.removed, false);
+    const byShapeType = await U.planAnnotationDeletion({
+        jobInstance: job, startFrame: 1, endFrame: 5, stopFrame: 30, targetLabel: 'skeleton',
+    });
+    assert.equal(byShapeType.targets.length, 0, 'shape type names are not object types');
+});
+
 await test('Deletion: invalid ranges are rejected', async () => {
     const job = createJob();
-    const base = { jobInstance: job, stopFrame: 30, targetType: 'all' };
+    const base = { jobInstance: job, stopFrame: 30, targetLabel: 'all' };
     assert.equal((await U.planAnnotationDeletion({ ...base, startFrame: 6, endFrame: 5 })).isValid, false);
     assert.equal((await U.planAnnotationDeletion({ ...base, startFrame: 1.5, endFrame: 5 })).isValid, false);
     assert.equal((await U.planAnnotationDeletion({ ...base, startFrame: 1, endFrame: 31 })).isValid, false);
@@ -595,7 +622,7 @@ await test('Undo/Redo batch: allowed only while the deletion steps are on top of
     job.addShape({ frame: 1, shapeType: 'rectangle' });
     job.addShape({ frame: 2, shapeType: 'rectangle' });
     const plan = await U.planAnnotationDeletion({
-        jobInstance: job, startFrame: 1, endFrame: 2, stopFrame: 30, targetType: 'all',
+        jobInstance: job, startFrame: 1, endFrame: 2, stopFrame: 30, targetLabel: 'all',
     });
     const result = await U.executeAnnotationDeletion(job, plan);
     const h1 = await job.actions.get();

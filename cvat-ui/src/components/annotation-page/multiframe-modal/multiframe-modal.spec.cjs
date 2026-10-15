@@ -6109,7 +6109,15 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
 
     // Type / Object ID controls
     assert.ok(workspaceSource.includes("className='cvat-multiframe-type-select'"), 'Type dropdown exists');
-    assert.ok(workspaceSource.includes('Object.values(ShapeType)'), 'Type dropdown lists the actual CVAT shape types');
+    assert.ok(
+        workspaceSource.includes('jobLabels: state.annotation.job.labels') &&
+        workspaceSource.includes('availableLabels.map(') && !workspaceSource.includes('ShapeType'),
+        'Type dropdowns list the job labels (object types), not CVAT shape types',
+    );
+    assert.ok(
+        utilsSource.includes('if (!matchesLabelFilter(state, targetLabel)) continue;'),
+        'Deletion filters objects by label',
+    );
     assert.ok(workspaceSource.includes("className='cvat-multiframe-object-id-input'"), 'Object ID input exists');
     assert.ok(workspaceSource.includes("className='cvat-multiframe-clear-id-btn'"), 'Object ID has a Clear action');
     assert.ok(workspaceSource.includes('setInputObjectID(getObjectInputKey('),
@@ -6145,6 +6153,20 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     assert.ok(!/\.delete\([^)]*,\s*true\)/.test(utilsSource), 'Deletion never forces removal of locked objects');
     assert.ok(workspaceSource.includes('open={showDeleteModal}'), 'antd 5 Modal uses the open prop');
     console.log('  ✔ TC 112 passed.');
+}
+
+// =========================================================================
+// TC 113: Other tiles' header bars and resize handles never show through a zoomed tile
+// =========================================================================
+{
+    console.log('TC 113: Tiles isolate their header / resize handle stacking...');
+    const fs = require('fs');
+    const path = require('path');
+    const stylesSource = fs.readFileSync(path.resolve(__dirname, 'styles.scss'), 'utf8');
+    const tileBlock = stylesSource.slice(stylesSource.indexOf('\n.cvat-multiframe-tile {'));
+    const tileRules = tileBlock.slice(0, tileBlock.indexOf('&:hover'));
+    assert.ok(/isolation:\s*isolate;/.test(tileRules), 'Each tile creates its own stacking context');
+    console.log('  ✔ TC 113 passed.');
 }
 
 console.log('\n=== All Real Multi-Frame Viewer Tests Passed Successfully! ===');

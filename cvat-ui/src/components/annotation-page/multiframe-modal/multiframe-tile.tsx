@@ -2,7 +2,9 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import React, {
+    useEffect, useRef, useState, useMemo, useCallback,
+} from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { CombinedState } from 'reducers';
 import Tag from 'antd/lib/tag';
@@ -36,13 +38,8 @@ interface Props {
     selectedObject: any | null;
     autoZoomEnabled?: boolean;
     autoFollowEnabled?: boolean;
-    isExpanded?: boolean;
-    isFullyExpanded?: boolean;
     isZoomedInPlace?: boolean;
     hasCustomLayout?: boolean;
-    expansionProgress?: number;
-    expandedStyle?: React.CSSProperties;
-    otherTileStyle?: React.CSSProperties;
     tileStyle?: React.CSSProperties;
     canResize?: boolean;
     isEditable?: boolean;
@@ -67,13 +64,8 @@ function MultiframeTile(props: Props): JSX.Element {
         selectedObject,
         autoZoomEnabled = true,
         autoFollowEnabled = true,
-        isExpanded = false,
-        isFullyExpanded = false,
         isZoomedInPlace = false,
         hasCustomLayout = false,
-        expansionProgress = 0,
-        expandedStyle,
-        otherTileStyle,
         tileStyle,
         canResize = true,
         isEditable = true,
@@ -235,12 +227,16 @@ function MultiframeTile(props: Props): JSX.Element {
             dimensions.width <= 0 ||
             dimensions.height <= 0
         ) {
-            return { x: 0, y: 0, width: dimensions.width, height: dimensions.height };
+            return {
+                x: 0, y: 0, width: dimensions.width, height: dimensions.height,
+            };
         }
 
         const bbox = getObjectBoundingBox(matchResult.targetState, matchResult.targetElementState, frameStates);
         if (!bbox) {
-            return { x: 0, y: 0, width: dimensions.width, height: dimensions.height };
+            return {
+                x: 0, y: 0, width: dimensions.width, height: dimensions.height,
+            };
         }
 
         if (autoZoomEnabled) {
@@ -249,14 +245,18 @@ function MultiframeTile(props: Props): JSX.Element {
 
         if (autoFollowEnabled) {
             return centerViewportOnObject(
-                { x: 0, y: 0, width: dimensions.width, height: dimensions.height },
+                {
+                    x: 0, y: 0, width: dimensions.width, height: dimensions.height,
+                },
                 bbox,
                 dimensions.width,
                 dimensions.height,
             );
         }
 
-        return { x: 0, y: 0, width: dimensions.width, height: dimensions.height };
+        return {
+            x: 0, y: 0, width: dimensions.width, height: dimensions.height,
+        };
     }, [autoZoomEnabled, autoFollowEnabled, selectedObject, matchResult, dimensions, frameStates]);
 
     // Automatically pan manualViewport to follow the matched object when autoFollowEnabled is true
@@ -281,12 +281,10 @@ function MultiframeTile(props: Props): JSX.Element {
         return targetViewport;
     }, [manualViewport, targetViewport]);
 
-    const renderWidth = targetViewport.width > 0 ? (
-        effectiveViewport.width > 0 ? effectiveViewport.width : targetViewport.width
-    ) : dimensions.width;
-    const renderHeight = targetViewport.height > 0 ? (
-        effectiveViewport.height > 0 ? effectiveViewport.height : targetViewport.height
-    ) : dimensions.height;
+    const viewportWidth = effectiveViewport.width > 0 ? effectiveViewport.width : targetViewport.width;
+    const viewportHeight = effectiveViewport.height > 0 ? effectiveViewport.height : targetViewport.height;
+    const renderWidth = targetViewport.width > 0 ? viewportWidth : dimensions.width;
+    const renderHeight = targetViewport.height > 0 ? viewportHeight : dimensions.height;
 
     const zoomPct = calculateZoomPercentage(effectiveViewport, dimensions.width);
 
@@ -300,9 +298,9 @@ function MultiframeTile(props: Props): JSX.Element {
     // Measure available container size for letterbox containment
     useEffect(() => {
         const el = contentRef.current;
-        if (!el) return;
+        if (!el) return undefined;
 
-        const updateSize = () => {
+        const updateSize = (): void => {
             const rect = el.getBoundingClientRect();
             const width = Math.round(rect.width);
             const height = Math.round(rect.height);
@@ -419,9 +417,9 @@ function MultiframeTile(props: Props): JSX.Element {
     // Wheel zoom centered at mouse pointer (Task B)
     useEffect(() => {
         const wrap = canvasWrapRef.current;
-        if (!wrap) return;
+        if (!wrap) return undefined;
 
-        const onWheel = (e: WheelEvent) => {
+        const onWheel = (e: WheelEvent): void => {
             e.preventDefault();
             e.stopPropagation();
 
@@ -467,9 +465,9 @@ function MultiframeTile(props: Props): JSX.Element {
     }, [isActiveFrame, onNavigateToFrame, frameNumber, effectiveViewport]);
 
     useEffect(() => {
-        if (!isPanning) return;
+        if (!isPanning) return undefined;
 
-        const onMouseMove = (e: MouseEvent) => {
+        const onMouseMove = (e: MouseEvent): void => {
             if (!panStartRef.current || !canvasWrapRef.current) return;
             const dx = e.clientX - panStartRef.current.clientX;
             const dy = e.clientY - panStartRef.current.clientY;
@@ -493,7 +491,7 @@ function MultiframeTile(props: Props): JSX.Element {
             setManualViewport(newVp);
         };
 
-        const onMouseUp = () => {
+        const onMouseUp = (): void => {
             setIsPanning(false);
             panStartRef.current = null;
         };
@@ -506,25 +504,6 @@ function MultiframeTile(props: Props): JSX.Element {
             window.removeEventListener('mouseup', onMouseUp);
         };
     }, [isPanning, dimensions]);
-
-    // Zoom Buttons Handlers (Task B)
-    const handleZoomIn = useCallback((e: React.MouseEvent) => {
-        e.stopPropagation();
-        if (dimensions.width <= 0 || dimensions.height <= 0) return;
-        const centerX = effectiveViewport.x + effectiveViewport.width / 2;
-        const centerY = effectiveViewport.y + effectiveViewport.height / 2;
-        const newVp = zoomViewportAtPoint(effectiveViewport, 0.8, centerX, centerY, dimensions.width, dimensions.height);
-        setManualViewport(newVp);
-    }, [effectiveViewport, dimensions]);
-
-    const handleZoomOut = useCallback((e: React.MouseEvent) => {
-        e.stopPropagation();
-        if (dimensions.width <= 0 || dimensions.height <= 0) return;
-        const centerX = effectiveViewport.x + effectiveViewport.width / 2;
-        const centerY = effectiveViewport.y + effectiveViewport.height / 2;
-        const newVp = zoomViewportAtPoint(effectiveViewport, 1.25, centerX, centerY, dimensions.width, dimensions.height);
-        setManualViewport(newVp);
-    }, [effectiveViewport, dimensions]);
 
     const handleZoomReset = useCallback((e: React.MouseEvent) => {
         e.stopPropagation();
@@ -553,14 +532,14 @@ function MultiframeTile(props: Props): JSX.Element {
     }, [onStartExpand, frameNumber, dimensions, effectiveViewport]);
 
     useEffect(() => {
-        if (!isResizing) return;
+        if (!isResizing) return undefined;
 
         const originalCursor = document.body.style.cursor;
         const originalUserSelect = document.body.style.userSelect;
         document.body.style.cursor = 'nwse-resize';
         document.body.style.userSelect = 'none';
 
-        const onMouseMove = (e: MouseEvent) => {
+        const onMouseMove = (e: MouseEvent): void => {
             if (!resizeStartRef.current) return;
             const dx = e.clientX - resizeStartRef.current.clientX;
             const dy = e.clientY - resizeStartRef.current.clientY;
@@ -575,7 +554,7 @@ function MultiframeTile(props: Props): JSX.Element {
             setManualViewport(newVp);
         };
 
-        const onMouseUp = () => {
+        const onMouseUp = (): void => {
             setIsResizing(false);
             resizeStartRef.current = null;
         };
@@ -622,6 +601,7 @@ function MultiframeTile(props: Props): JSX.Element {
         newPoints: [number, number],
     ) => {
         // 1. Update elementState points directly
+        // eslint-disable-next-line no-param-reassign
         elementState.points = [newPoints[0], newPoints[1]];
 
         // 2. Optimistically update local tile frameStates
@@ -660,6 +640,7 @@ function MultiframeTile(props: Props): JSX.Element {
         newPoints: number[],
     ) => {
         // 1. Update shapeState points directly
+        // eslint-disable-next-line no-param-reassign
         shapeState.points = [...newPoints];
 
         // 2. Optimistically update local tile frameStates
@@ -711,8 +692,8 @@ function MultiframeTile(props: Props): JSX.Element {
         // Also check if there is an associated rectangle in this frame
         const associatedRect = frameStates.find((st: any) => (
             st && !st.outside && st.shapeType === 'rectangle' &&
-            (st.clientID === parentState.clientID || st.clientID === parentState.parentID || parentState.parentID === st.clientID ||
-             (st.group?.id && parentState.group?.id && st.group.id === parentState.group.id))
+            (st.clientID === parentState.clientID || st.clientID === parentState.parentID ||
+                (st.group?.id && parentState.group?.id && st.group.id === parentState.group.id))
         ));
 
         let newRectPoints: [number, number, number, number] | null = null;
@@ -732,8 +713,10 @@ function MultiframeTile(props: Props): JSX.Element {
 
         // Ensure parentState has updated wrappingRect & boundingBox using the exact same translation offset
         if (newOuterBox) {
+            /* eslint-disable no-param-reassign */
             parentState.wrappingRect = { ...newOuterBox };
             parentState.boundingBox = { ...newOuterBox };
+            /* eslint-enable no-param-reassign */
         }
 
         // 2. Set all skeleton points on parentState if setter is supported, or flatten points
@@ -744,11 +727,14 @@ function MultiframeTile(props: Props): JSX.Element {
                     allPoints.push(el.points[0], el.points[1]);
                 }
             }
-            if (allPoints.length > 0 && Array.isArray(parentState.points) && parentState.points.length === allPoints.length) {
+            const hasPoints = Array.isArray(parentState.points);
+            /* eslint-disable no-param-reassign */
+            if (allPoints.length > 0 && hasPoints && parentState.points.length === allPoints.length) {
                 parentState.points = allPoints;
-            } else if (newOuterBox && Array.isArray(parentState.points) && parentState.points.length === 4) {
+            } else if (newOuterBox && hasPoints && parentState.points.length === 4) {
                 parentState.points = [newOuterBox.xtl, newOuterBox.ytl, newOuterBox.xbr, newOuterBox.ybr];
             }
+            /* eslint-enable no-param-reassign */
         } catch (_e) {
             // ignore if points setter expects specific format
         }
@@ -814,17 +800,23 @@ function MultiframeTile(props: Props): JSX.Element {
         }
     }, [dispatch, frameNumber, isActiveFrame, onNavigateToFrame, onSelectObject]);
 
-    const isTileZoomed = manualViewport !== null || (autoZoomEnabled && dimensions.width > 0 && targetViewport.width < dimensions.width);
+    const isTileZoomed = manualViewport !== null ||
+        (autoZoomEnabled && dimensions.width > 0 && targetViewport.width < dimensions.width);
+    const tileClassName = [
+        'cvat-multiframe-tile',
+        isActiveFrame ? 'cvat-multiframe-tile-active' : '',
+        isTileZoomed ? 'cvat-multiframe-tile-zoomed' : '',
+        isResizing ? 'cvat-multiframe-tile-resizing' : '',
+        isZoomedInPlace ? 'cvat-multiframe-tile-zoomed-in-place' : '',
+    ].filter(Boolean).join(' ');
+
+    /* eslint-disable jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */
 
     return (
         <div
             ref={tileRootRef}
-            className={`cvat-multiframe-tile ${isActiveFrame ? 'cvat-multiframe-tile-active' : ''} ${isTileZoomed ? 'cvat-multiframe-tile-zoomed' : ''} ${isResizing ? 'cvat-multiframe-tile-resizing' : ''} ${isExpanded ? 'cvat-multiframe-tile-expanded' : ''} ${isFullyExpanded ? 'cvat-multiframe-tile-fully-expanded' : ''} ${isZoomedInPlace ? 'cvat-multiframe-tile-zoomed-in-place' : ''}`}
-            style={{
-                ...tileStyle,
-                ...expandedStyle,
-                ...otherTileStyle,
-            }}
+            className={tileClassName}
+            style={tileStyle}
             onClick={() => {
                 if (!isActiveFrame) {
                     onNavigateToFrame(frameNumber);
@@ -947,7 +939,7 @@ function MultiframeTile(props: Props): JSX.Element {
                                 Reset
                             </Button>
                         )}
-                        {(isZoomedInPlace || hasCustomLayout || (isExpanded && onRestoreGrid)) && (
+                        {(isZoomedInPlace || hasCustomLayout) && (
                             <Button
                                 size='small'
                                 type='primary'
@@ -979,7 +971,7 @@ function MultiframeTile(props: Props): JSX.Element {
                                         <Tag color={matchResult.isOccluded ? 'warning' : 'cyan'}>
                                             {matchResult.isOccluded ? 'Occluded' : 'Matched'}
                                         </Tag>
-                                        {(manualViewport !== null || (autoZoomEnabled && targetViewport.width < dimensions.width)) && (
+                                        {isTileZoomed && (
                                             <Tag color='geekblue' className='cvat-multiframe-badge'>
                                                 Zoomed
                                             </Tag>
@@ -1020,7 +1012,7 @@ function MultiframeTile(props: Props): JSX.Element {
                         onMouseDown={handleResizeMouseDown}
                         onClick={(e) => e.stopPropagation()}
                         onDoubleClick={(e) => e.stopPropagation()}
-                        title={isExpanded ? 'Drag corner inward to restore grid or outward to expand' : 'Drag to expand frame across workspace'}
+                        title='Drag to expand frame across workspace'
                     >
                         <svg viewBox='0 0 10 10' className='cvat-multiframe-resize-icon'>
                             <line x1='8' y1='2' x2='2' y2='8' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />

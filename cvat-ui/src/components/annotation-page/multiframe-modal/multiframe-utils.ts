@@ -110,7 +110,7 @@ export function getDefaultFrameRange(
 
         const half = Math.floor(maxFrames / 2);
         let startIdx = Math.max(0, resolvedIdx - half);
-        let endIdx = Math.min(validFrameNumbers.length - 1, startIdx + maxFrames - 1);
+        const endIdx = Math.min(validFrameNumbers.length - 1, startIdx + maxFrames - 1);
         if (endIdx - startIdx + 1 < maxFrames && startIdx > 0) {
             startIdx = Math.max(0, endIdx - maxFrames + 1);
         }
@@ -120,7 +120,7 @@ export function getDefaultFrameRange(
     const clampedCurrent = Math.max(jobStartFrame, Math.min(jobStopFrame, currentFrame));
     const half = Math.floor(maxFrames / 2);
     let start = Math.max(jobStartFrame, clampedCurrent - half);
-    let end = Math.min(jobStopFrame, start + maxFrames - 1);
+    const end = Math.min(jobStopFrame, start + maxFrames - 1);
     if (end - start + 1 < maxFrames && start > jobStartFrame) {
         start = Math.max(jobStartFrame, end - maxFrames + 1);
     }
@@ -201,12 +201,16 @@ export function resolveCrossFrameIdentity(
     targetFrameStates: any[],
 ): IdentityMatchResult {
     if (!selectedState) {
-        return { status: 'NO_SELECTION', targetState: null, targetElementState: null, matchedClientID: null };
+        return {
+            status: 'NO_SELECTION', targetState: null, targetElementState: null, matchedClientID: null,
+        };
     }
 
     // Constraint 6: Standalone shapes are never matched across frames
     if (selectedState.objectType !== 'track') {
-        return { status: 'NO_IDENTITY', targetState: null, targetElementState: null, matchedClientID: null };
+        return {
+            status: 'NO_IDENTITY', targetState: null, targetElementState: null, matchedClientID: null,
+        };
     }
 
     // Case 1: Landmark element within a skeleton track (Composite Key: <Parent Track clientID, Sublabel ID>)
@@ -572,7 +576,9 @@ export function getObjectBoundingBox(
         }
 
         if (minX !== Infinity && minY !== Infinity) {
-            return { xtl: minX, ytl: minY, xbr: maxX, ybr: maxY };
+            return {
+                xtl: minX, ytl: minY, xbr: maxX, ybr: maxY,
+            };
         }
     }
 
@@ -598,7 +604,9 @@ export function calculateAutoZoomViewport(
     minDimension = 10,
 ): Viewport {
     if (imageWidth <= 0 || imageHeight <= 0) {
-        return { x: 0, y: 0, width: Math.max(1, imageWidth), height: Math.max(1, imageHeight) };
+        return {
+            x: 0, y: 0, width: Math.max(1, imageWidth), height: Math.max(1, imageHeight),
+        };
     }
 
     const objWidth = Math.max(0, bbox.xbr - bbox.xtl);
@@ -626,7 +634,9 @@ export function calculateAutoZoomViewport(
 
     // Never exceed full frame dimensions
     if (vpWidth >= imageWidth || vpHeight >= imageHeight) {
-        return { x: 0, y: 0, width: imageWidth, height: imageHeight };
+        return {
+            x: 0, y: 0, width: imageWidth, height: imageHeight,
+        };
     }
 
     // Center the viewport on the object
@@ -664,7 +674,9 @@ export function calculateAutoZoomViewport(
  */
 export function clampViewport(vp: Viewport, imageWidth: number, imageHeight: number): Viewport {
     if (imageWidth <= 0 || imageHeight <= 0) {
-        return { x: 0, y: 0, width: Math.max(1, imageWidth), height: Math.max(1, imageHeight) };
+        return {
+            x: 0, y: 0, width: Math.max(1, imageWidth), height: Math.max(1, imageHeight),
+        };
     }
 
     const targetAspect = imageWidth / imageHeight;
@@ -677,8 +689,8 @@ export function clampViewport(vp: Viewport, imageWidth: number, imageHeight: num
         width = height * targetAspect;
     }
 
-    let x = Math.max(0, Math.min(vp.x, imageWidth - width));
-    let y = Math.max(0, Math.min(vp.y, imageHeight - height));
+    const x = Math.max(0, Math.min(vp.x, imageWidth - width));
+    const y = Math.max(0, Math.min(vp.y, imageHeight - height));
 
     const roundedWidth = Math.min(Math.round(width), imageWidth);
     const roundedHeight = Math.min(Math.round(height), imageHeight);
@@ -720,7 +732,9 @@ export function zoomViewportAtPoint(
     const newX = focalX - rx * newWidth;
     const newY = focalY - ry * newHeight;
 
-    return clampViewport({ x: newX, y: newY, width: newWidth, height: newHeight }, imageWidth, imageHeight);
+    return clampViewport({
+        x: newX, y: newY, width: newWidth, height: newHeight,
+    }, imageWidth, imageHeight);
 }
 
 /**
@@ -843,7 +857,7 @@ export function extractSelectableObjects(states: any[]): SelectableObject[] {
         }
 
         const isTrack = state.objectType === 'track';
-        const clientID = state.clientID;
+        const { clientID } = state;
         if (typeof clientID !== 'number') continue;
 
         const shapeType = state.shapeType || 'unknown';
@@ -986,7 +1000,9 @@ export function mapPointerToImageCoordinates(
     imageWidth: number,
     imageHeight: number,
 ): { x: number; y: number; isInsideContent: boolean } {
-    const { fitWidth, fitHeight, offsetX, offsetY } = layout;
+    const {
+        fitWidth, fitHeight, offsetX, offsetY,
+    } = layout;
 
     const isInsideContent =
         pointerContainerX >= offsetX &&
@@ -1216,6 +1232,8 @@ export interface ParsedObjectID {
     objectType: 'shape' | 'track' | null;
 }
 
+// Linear-time: every quantified part is followed by a disjoint character class (\s vs [:#] vs \d)
+// eslint-disable-next-line security/detect-unsafe-regex
 const OBJECT_ID_PATTERN = /^#?\s*(?:(track|shape)_|(id|sid|server)\s*[:#]\s*)?(\d+)$/i;
 
 /**
@@ -1228,22 +1246,30 @@ const OBJECT_ID_PATTERN = /^#?\s*(?:(track|shape)_|(id|sid|server)\s*[:#]\s*)?(\
  */
 export function parseObjectIDInput(rawInput: string | number | null | undefined): ParsedObjectID {
     if (rawInput === null || rawInput === undefined) {
-        return { status: 'EMPTY', id: null, scope: 'any', objectType: null };
+        return {
+            status: 'EMPTY', id: null, scope: 'any', objectType: null,
+        };
     }
 
     const input = String(rawInput).trim();
     if (!input) {
-        return { status: 'EMPTY', id: null, scope: 'any', objectType: null };
+        return {
+            status: 'EMPTY', id: null, scope: 'any', objectType: null,
+        };
     }
 
     const match = OBJECT_ID_PATTERN.exec(input);
     if (!match) {
-        return { status: 'INVALID', id: null, scope: 'any', objectType: null };
+        return {
+            status: 'INVALID', id: null, scope: 'any', objectType: null,
+        };
     }
 
     const id = Number(match[3]);
     if (!Number.isSafeInteger(id)) {
-        return { status: 'INVALID', id: null, scope: 'any', objectType: null };
+        return {
+            status: 'INVALID', id: null, scope: 'any', objectType: null,
+        };
     }
 
     if (match[1]) {
@@ -1253,10 +1279,14 @@ export function parseObjectIDInput(rawInput: string | number | null | undefined)
     }
 
     if (match[2]) {
-        return { status: 'OK', id, scope: 'server', objectType: null };
+        return {
+            status: 'OK', id, scope: 'server', objectType: null,
+        };
     }
 
-    return { status: 'OK', id, scope: 'any', objectType: null };
+    return {
+        status: 'OK', id, scope: 'any', objectType: null,
+    };
 }
 
 /** Returns an unambiguous input key for an object state, e.g. "track_12" */
@@ -1264,7 +1294,7 @@ export function getObjectInputKey(state: any): string {
     return state?.objectType === 'track' ? `track_${state.clientID}` : `shape_${state.clientID}`;
 }
 
-export type ObjectResolutionStatus = 'EMPTY' | 'INVALID' | 'VALID' | 'NOT_FOUND' | 'TYPE_MISMATCH' | 'AMBIGUOUS';
+export type ObjectResolutionStatus = 'EMPTY' | 'INVALID' | 'VALID' | 'NOT_FOUND' | 'LABEL_MISMATCH' | 'AMBIGUOUS';
 
 export interface ObjectResolutionResult {
     status: ObjectResolutionStatus;
@@ -1289,16 +1319,26 @@ function capitalize(value: string): string {
     return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
 }
 
+/** Label name of an object state (the object type shown to annotators, e.g. "mattrai") */
+export function getStateLabelName(state: any): string {
+    return typeof state?.label?.name === 'string' ? state.label.name : '';
+}
+
+/** 'all' (or empty) matches every object, otherwise the object label name must be equal */
+export function matchesLabelFilter(state: any, labelFilter: string | null | undefined): boolean {
+    return !labelFilter || labelFilter === 'all' || getStateLabelName(state) === labelFilter;
+}
+
 /**
  * Resolves an entered Object ID to a single top-level annotation object.
  * - A Skeleton landmark ID always resolves to its parent Skeleton (landmarks are never independent objects).
  * - Plain numbers can match both client IDs and server IDs; if they identify different objects,
  *   the result is AMBIGUOUS and nothing is selected.
- * - The type filter narrows candidates before ambiguity is evaluated.
+ * - The label filter (object type, e.g. "mattrai") narrows candidates before ambiguity is evaluated.
  */
 export function resolveObjectByIDAndType(
     rawInputID: string | number | null | undefined,
-    typeFilter: string,
+    labelFilter: string,
     allStates: any[],
 ): ObjectResolutionResult {
     const base = {
@@ -1370,21 +1410,20 @@ export function resolveObjectByIDAndType(
         return { ...base, status: 'NOT_FOUND', message: `Object ID ${id} not found` };
     }
 
-    const typed = typeFilter && typeFilter !== 'all' ?
-        allCandidates.filter((state) => state.shapeType === typeFilter) : allCandidates;
+    const typed = allCandidates.filter((state) => matchesLabelFilter(state, labelFilter));
 
     if (typed.length === 0) {
-        const types = Array.from(new Set(allCandidates.map((state) => capitalize(state.shapeType || 'unknown'))));
+        const labels = Array.from(new Set(allCandidates.map((state) => getStateLabelName(state) || 'unknown')));
         const [first] = allCandidates;
         return {
             ...base,
-            status: 'TYPE_MISMATCH',
+            status: 'LABEL_MISMATCH',
             matchedKey: allCandidates.length === 1 ? getObjectInputKey(first) : null,
             resolvedType: allCandidates.length === 1 ? first.shapeType : null,
             resolvedID: allCandidates.length === 1 ? first.clientID : null,
             isSkeleton: allCandidates.length === 1 && first.shapeType === 'skeleton',
             candidates: allCandidates,
-            message: `ID ${id} is ${types.join('/')}, but the type filter is ${capitalize(typeFilter)}`,
+            message: `ID ${id} is ${labels.join('/')}, but the type filter is ${labelFilter}`,
         };
     }
 
@@ -1400,6 +1439,7 @@ export function resolveObjectByIDAndType(
     const [matched] = typed;
     const shapeType = matched.shapeType || 'unknown';
     const serverID = matched.serverID ?? matched.id;
+    const labelName = getStateLabelName(matched);
     return {
         status: 'VALID',
         matchedObject: matched,
@@ -1409,7 +1449,7 @@ export function resolveObjectByIDAndType(
         isSkeleton: shapeType === 'skeleton',
         candidates: typed,
         message: `${getObjectInputKey(matched)}${typeof serverID === 'number' ? ` (server ID ${serverID})` : ''} ` +
-            `[${capitalize(shapeType)}]`,
+            `[${labelName ? `${labelName}, ` : ''}${capitalize(shapeType)}]`,
     };
 }
 
@@ -1452,7 +1492,8 @@ export interface DeletionPlan {
     error: string | null;
     startFrame: number;
     endFrame: number;
-    targetType: string;
+    /** label name (object type) or 'all' */
+    targetLabel: string;
     targetClientID: number | null;
     targets: DeletionTarget[];
     skippedLocked: { key: string; frames: number[] }[];
@@ -1466,8 +1507,9 @@ export interface PlanDeletionParams {
     endFrame: number;
     /** last frame of the job, used to check whether a track continues after the range */
     stopFrame: number;
-    targetType: string;
-    /** client ID of the resolved top-level object; null deletes every object matching targetType */
+    /** label name (object type, e.g. "mattrai") or 'all' */
+    targetLabel: string;
+    /** client ID of the resolved top-level object; null deletes every object matching targetLabel */
     targetClientID?: number | null;
 }
 
@@ -1505,7 +1547,7 @@ function isLocked(state: any): boolean {
  */
 export async function planAnnotationDeletion(params: PlanDeletionParams): Promise<DeletionPlan> {
     const {
-        jobInstance, startFrame, endFrame, stopFrame, targetType,
+        jobInstance, startFrame, endFrame, stopFrame, targetLabel,
     } = params;
     const targetClientID = typeof params.targetClientID === 'number' ? params.targetClientID : null;
 
@@ -1514,7 +1556,7 @@ export async function planAnnotationDeletion(params: PlanDeletionParams): Promis
         error: null,
         startFrame,
         endFrame,
-        targetType,
+        targetLabel,
         targetClientID,
         targets: [],
         skippedLocked: [],
@@ -1547,7 +1589,7 @@ export async function planAnnotationDeletion(params: PlanDeletionParams): Promis
         for (const state of states) {
             if (!state || state.removed || hasParent(state)) continue;
             if (state.objectType !== 'shape' && state.objectType !== 'track') continue;
-            if (targetType !== 'all' && state.shapeType !== targetType) continue;
+            if (!matchesLabelFilter(state, targetLabel)) continue;
             if (targetClientID !== null && state.clientID !== targetClientID) continue;
             if (state.outside) continue;
 
@@ -1608,7 +1650,8 @@ export async function planAnnotationDeletion(params: PlanDeletionParams): Promis
                 const freezeNeeded = visibleAfter && !afterIsKeyframe;
                 target.freezeFrame = freezeNeeded ? endFrame + 1 : null;
                 // cvat-core: a skeleton keyframe change records two undo steps, other tracks one
-                const freezeSteps = freezeNeeded ? (isSkeleton ? 2 : 1) : 0;
+                const keyframeSteps = isSkeleton ? 2 : 1;
+                const freezeSteps = freezeNeeded ? keyframeSteps : 0;
                 target.historySteps = freezeSteps + entry.hideOps;
 
                 if (NON_LINEAR_INTERPOLATION_TYPES.has(state.shapeType)) {

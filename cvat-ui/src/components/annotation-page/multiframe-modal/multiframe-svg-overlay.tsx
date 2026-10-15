@@ -2,9 +2,11 @@
 //
 // SPDX-License-Identifier: MIT
 
-import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import React, {
+    useMemo, useState, useRef, useEffect, useCallback,
+} from 'react';
 import {
-    Viewport, BBox, parseBBox, resolveSkeletonWrappingBox,
+    Viewport, BBox, resolveSkeletonWrappingBox,
 } from './multiframe-utils';
 
 interface Props {
@@ -170,9 +172,9 @@ export function parseSkeletonTemplate(label: any): {
             // Regex fallback if DOMParser was unavailable or returned no elements
             if (nodes.length === 0 && edges.length === 0) {
                 const circleRegex = /<circle\b([^>]*)\/?>/gi;
-                let cMatch: RegExpExecArray | null;
+                let cMatch = circleRegex.exec(svgString);
                 let cIdx = 0;
-                while ((cMatch = circleRegex.exec(svgString)) !== null) {
+                while (cMatch !== null) {
                     const attrs = cMatch[1];
                     const nodeIdMatch = /data-node-id=["']?(\d+)["']?/i.exec(attrs);
                     const labelIdMatch = /data-label-id=["']?(\d+)["']?/i.exec(attrs);
@@ -186,11 +188,12 @@ export function parseSkeletonTemplate(label: any): {
                         elementId: elementIdMatch ? Number(elementIdMatch[1]) : undefined,
                         index: cIdx++,
                     });
+                    cMatch = circleRegex.exec(svgString);
                 }
 
                 const lineRegex = /<line\b([^>]*)\/?>/gi;
-                let lMatch: RegExpExecArray | null;
-                while ((lMatch = lineRegex.exec(svgString)) !== null) {
+                let lMatch = lineRegex.exec(svgString);
+                while (lMatch !== null) {
                     const attrs = lMatch[1];
                     const fromMatch = /data-node-from=["']?(\d+)["']?/i.exec(attrs);
                     const toMatch = /data-node-to=["']?(\d+)["']?/i.exec(attrs);
@@ -202,6 +205,7 @@ export function parseSkeletonTemplate(label: any): {
                             toNode: toMatch[1],
                         });
                     }
+                    lMatch = lineRegex.exec(svgString);
                 }
             }
         }
@@ -214,17 +218,20 @@ export function parseSkeletonTemplate(label: any): {
             const sub = (node.elementId !== undefined && sublabels[node.elementId - 1]) ||
                 (node.index < sublabels.length && sublabels[node.index]);
             if (sub) {
+                /* eslint-disable no-param-reassign */
                 if (node.labelId === undefined && sub.id !== undefined) {
                     node.labelId = Number(sub.id);
                 }
                 if (!node.labelName && sub.name) {
                     node.labelName = sub.name;
                 }
+                /* eslint-enable no-param-reassign */
             }
         });
     }
 
-    // Map edge.from and edge.to to sublabelId if node has labelId (ensuring backwards compatibility with sublabel ID lookups)
+    // Map edge.from and edge.to to sublabelId if node has labelId
+    // (ensuring backwards compatibility with sublabel ID lookups)
     const nodeToLabelIdMap = new Map<string, number>();
     nodes.forEach((node) => {
         if (node.labelId !== undefined) {
@@ -233,12 +240,14 @@ export function parseSkeletonTemplate(label: any): {
     });
 
     edges.forEach((edge) => {
+        /* eslint-disable no-param-reassign */
         if (edge.fromNode && nodeToLabelIdMap.has(edge.fromNode)) {
             edge.from = nodeToLabelIdMap.get(edge.fromNode)!;
         }
         if (edge.toNode && nodeToLabelIdMap.has(edge.toNode)) {
             edge.to = nodeToLabelIdMap.get(edge.toNode)!;
         }
+        /* eslint-enable no-param-reassign */
     });
 
     return { edges, nodes };
@@ -402,9 +411,9 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
     }, [onEditSkeleton, viewport, width, height]);
 
     useEffect(() => {
-        if (!dragState && !dragShapeState && !dragSkeletonState) return;
+        if (!dragState && !dragShapeState && !dragSkeletonState) return undefined;
 
-        const onMouseMove = (e: MouseEvent) => {
+        const onMouseMove = (e: MouseEvent): void => {
             if (!svgRef.current) return;
             const svg = svgRef.current;
 
@@ -442,7 +451,9 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                         let minY = clampedY;
                         let maxY = clampedY;
                         for (const el of currentDrag.parentState.elements) {
-                            if (el.clientID !== currentDrag.elementState?.clientID && !el.outside && Array.isArray(el.points) && el.points.length >= 2) {
+                            const isOtherVisibleElement = el.clientID !== currentDrag.elementState?.clientID &&
+                                !el.outside && Array.isArray(el.points) && el.points.length >= 2;
+                            if (isOtherVisibleElement) {
                                 minX = Math.min(minX, el.points[0]);
                                 maxX = Math.max(maxX, el.points[0]);
                                 minY = Math.min(minY, el.points[1]);
@@ -566,7 +577,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
             }
         };
 
-        const onMouseUp = () => {
+        const onMouseUp = (): void => {
             const currentLandmarkDrag = dragStateRef.current;
             if (currentLandmarkDrag) {
                 const [initX, initY] = currentLandmarkDrag.initialPoint;
@@ -585,7 +596,8 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
             if (currentShapeDrag) {
                 const [initXtl, initYtl, initXbr, initYbr] = currentShapeDrag.initialPoints;
                 const [curXtl, curYtl, curXbr, curYbr] = currentShapeDrag.currentPoints;
-                const dist = Math.hypot(curXtl - initXtl, curYtl - initYtl) + Math.hypot(curXbr - initXbr, curYbr - initYbr);
+                const dist = Math.hypot(curXtl - initXtl, curYtl - initYtl) +
+                    Math.hypot(curXbr - initXbr, curYbr - initYbr);
                 if (dist > 0.5 && onEditShape) {
                     onEditShape(currentShapeDrag.shapeState, [curXtl, curYtl, curXbr, curYbr]);
                 }
@@ -616,7 +628,10 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
             window.removeEventListener('mousemove', onMouseMove);
             window.removeEventListener('mouseup', onMouseUp);
         };
-    }, [Boolean(dragState || dragShapeState || dragSkeletonState), width, height, onEditLandmark, onEditShape, onEditSkeleton, onSelectObject, onAutoFollow]);
+    }, [
+        Boolean(dragState || dragShapeState || dragSkeletonState),
+        width, height, onEditLandmark, onEditShape, onEditSkeleton, onSelectObject, onAutoFollow,
+    ]);
 
     return (
         <svg
@@ -651,8 +666,8 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                     // Check if there is a separate rectangle in states associated with this skeleton
                     const separateRect = states.find((st: any) => (
                         st && !st.outside && st.shapeType === 'rectangle' &&
-                        (st.clientID === state.clientID || st.clientID === state.parentID || state.parentID === st.clientID ||
-                         (st.group?.id && state.group?.id && st.group.id === state.group.id))
+                        (st.clientID === state.clientID || st.clientID === state.parentID ||
+                            (st.group?.id && state.group?.id && st.group.id === state.group.id))
                     ));
 
                     // Outer box resolved using native CVAT Canvas logic (cvat-canvas canvasView.ts)
@@ -660,10 +675,23 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
 
                     const isDraggingThisSkeleton = dragSkeletonState?.parentState?.clientID === state.clientID;
                     const [dragDx, dragDy] = isDraggingThisSkeleton ? dragSkeletonState.currentOffset : [0, 0];
+                    let skeletonCursor = 'pointer';
+                    if (onEditSkeleton) skeletonCursor = isDraggingThisSkeleton ? 'grabbing' : 'grab';
 
-                    const firstVisibleElement = state.elements.find((el: any) => !el.outside && Array.isArray(el.points) && el.points.length >= 2);
-                    const labelX = (outerBox ? outerBox.xtl : (firstVisibleElement ? firstVisibleElement.points[0] : 10)) + dragDx;
-                    const labelY = (outerBox ? Math.max(12, outerBox.ytl - 6 * scaleFactor) : (firstVisibleElement ? Math.max(12, firstVisibleElement.points[1] - 12 * scaleFactor) : 20)) + dragDy;
+                    const firstVisibleElement = state.elements.find((el: any) => (
+                        !el.outside && Array.isArray(el.points) && el.points.length >= 2
+                    ));
+                    let labelX = 10;
+                    let labelY = 20;
+                    if (outerBox) {
+                        labelX = outerBox.xtl;
+                        labelY = Math.max(12, outerBox.ytl - 6 * scaleFactor);
+                    } else if (firstVisibleElement) {
+                        [labelX] = firstVisibleElement.points;
+                        labelY = Math.max(12, firstVisibleElement.points[1] - 12 * scaleFactor);
+                    }
+                    labelX += dragDx;
+                    labelY += dragDy;
 
                     const boxX = outerBox ? outerBox.xtl + dragDx : 0;
                     const boxY = outerBox ? outerBox.ytl + dragDy : 0;
@@ -672,8 +700,8 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
 
                     const labelKey = String(state.label?.id ?? state.label?.name ?? state.clientID);
                     const template = skeletonTemplatesCache[labelKey] || parseSkeletonTemplate(state.label);
-                    const edges = template.edges;
-                    const nodes = template.nodes;
+                    const { edges } = template;
+                    const { nodes } = template;
 
                     // Build mapping from nodeId, sublabelId, and sublabelName to element in state.elements
                     const nodeToElement = new Map<string, any>();
@@ -732,7 +760,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                     opacity={0.85}
                                     style={{
                                         pointerEvents: 'all',
-                                        cursor: onEditSkeleton ? (isDraggingThisSkeleton ? 'grabbing' : 'grab') : 'pointer',
+                                        cursor: skeletonCursor,
                                     }}
                                     onMouseDown={(e) => {
                                         if (onEditSkeleton) {
@@ -800,7 +828,8 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                     return null;
                                 }
 
-                                const isEdgeOccluded = (isSkeletonMatched && isOccluded) || fromEl.occluded || toEl.occluded || state.occluded;
+                                const isEdgeOccluded = (isSkeletonMatched && isOccluded) ||
+                                    fromEl.occluded || toEl.occluded || state.occluded;
 
                                 return (
                                     <line
@@ -826,6 +855,8 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                 }
 
                                 const isBeingDragged = dragState?.elementState?.clientID === el.clientID;
+                                let landmarkCursor = onEditLandmark ? 'grab' : 'pointer';
+                                if (isBeingDragged) landmarkCursor = 'grabbing';
                                 let [x, y] = isBeingDragged ? dragState.currentPoint : el.points;
                                 if (isDraggingThisSkeleton) {
                                     x += dragDx;
@@ -843,7 +874,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                             fill='transparent'
                                             style={{
                                                 pointerEvents: 'all',
-                                                cursor: isBeingDragged ? 'grabbing' : (onEditLandmark ? 'grab' : 'pointer'),
+                                                cursor: landmarkCursor,
                                             }}
                                             onMouseDown={(e) => {
                                                 if (onEditLandmark) {
@@ -1016,9 +1047,11 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                     const isSkeletonDrag = !isBeingDragged && Boolean(dragSkeletonState && (
                         state.clientID === dragSkeletonState.parentState.clientID ||
                         state.parentID === dragSkeletonState.parentState.clientID ||
-                        (state.group?.id && dragSkeletonState.parentState.group?.id && state.group.id === dragSkeletonState.parentState.group.id)
+                        (state.group?.id && dragSkeletonState.parentState.group?.id &&
+                            state.group.id === dragSkeletonState.parentState.group.id)
                     ));
-                    const [skelDx, skelDy] = isSkeletonDrag && dragSkeletonState ? dragSkeletonState.currentOffset : [0, 0];
+                    const [skelDx, skelDy] = isSkeletonDrag && dragSkeletonState ?
+                        dragSkeletonState.currentOffset : [0, 0];
                     let [xtl, ytl, xbr, ybr] = isBeingDragged ? dragShapeState.currentPoints : state.points;
                     if (isSkeletonDrag) {
                         xtl += skelDx;
@@ -1030,7 +1063,9 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                         (typeof matchedRectClientID === 'number' && state.clientID === matchedRectClientID) ||
                         (typeof matchedSkeletonClientID === 'number' && (
                             state.parentID === matchedSkeletonClientID ||
-                            (state.group?.id && states.some((st: any) => st.clientID === matchedSkeletonClientID && st.group?.id === state.group.id))
+                            (state.group?.id && states.some((st: any) => (
+                                st.clientID === matchedSkeletonClientID && st.group?.id === state.group.id
+                            )))
                         )) ||
                         state.clientID === activeClientID;
 
