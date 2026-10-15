@@ -5257,15 +5257,9 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     const stylesSource = fs.readFileSync(stylesSourcePath, 'utf8');
 
     assert.ok(
-        tileSource.includes('cvat-multiframe-tile-resize-handle'),
-        'Resize handle must be present in MultiframeTile'
-    );
-    assert.ok(
-        stylesSource.includes('.cvat-multiframe-tile-resize-handle') &&
-        stylesSource.includes('cursor: nwse-resize') &&
-        stylesSource.includes('bottom: 2px') &&
-        stylesSource.includes('right: 2px'),
-        'Resize handle must be positioned at bottom-right corner with nwse-resize cursor'
+        !tileSource.includes('cvat-multiframe-tile-resize-handle') &&
+        !stylesSource.includes('.cvat-multiframe-tile-resize-handle'),
+        'Drag-corner resize handle is removed (double-click zooms a frame instead)'
     );
 
     // 2. Smooth zoom in on positive drag (outward/down-right) & zoom out on negative drag (inward/up-left)
@@ -5736,16 +5730,10 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
 
     // 1. Drag-to-zoom handle & intuitive outward/inward zoom math
     assert.ok(
-        tileSource.includes('cvat-multiframe-tile-resize-handle') &&
-        tileSource.includes('handleResizeMouseDown'),
-        'Resize handle and handleResizeMouseDown must be present in tile'
-    );
-    assert.ok(
-        stylesSource.includes('.cvat-multiframe-tile-resize-handle') &&
-        stylesSource.includes('cursor: nwse-resize') &&
-        stylesSource.includes('bottom: 2px') &&
-        stylesSource.includes('right: 2px'),
-        'Resize handle positioned at bottom-right corner'
+        !tileSource.includes('cvat-multiframe-tile-resize-handle') &&
+        !tileSource.includes('handleResizeMouseDown') &&
+        !stylesSource.includes('.cvat-multiframe-tile-resize-handle'),
+        'Tile has no drag-corner resize handle'
     );
 
     const imgW = 1920;
@@ -5823,8 +5811,8 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         'Controls reveal clearly on hover'
     );
     assert.ok(
-        stylesSource.includes('pointer-events: auto'),
-        'Overlay controls must remain clickable'
+        stylesSource.includes('pointer-events: none'),
+        'Frame ID overlay lets clicks and double-clicks pass through to the frame'
     );
 
     console.log('  ✔ TC 109 passed.');
@@ -5951,8 +5939,8 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
 
     // 6. UI Presence: Resize handle, restore buttons, and grid placeholder
     assert.ok(
-        tileSource.includes('cvat-multiframe-tile-resize-handle'),
-        'Resize handle on tile corner present'
+        !tileSource.includes('cvat-multiframe-tile-resize-handle'),
+        'No resize handle on tile corner'
     );
     assert.ok(
         !tileSource.includes('cvat-multiframe-restore-grid-btn'),
@@ -6012,14 +6000,16 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         'CSS grid uses row-dense auto flow to rearrange remaining tiles when a tile expands'
     );
     assert.ok(
-        workspaceSource.includes('tileLayoutSizes') &&
-        workspaceSource.includes('handleTileStartExpand'),
-        'Workspace tracks tileLayoutSizes and provides drag-to-expand layout handler'
+        !workspaceSource.includes('tileLayoutSizes') &&
+        !workspaceSource.includes('handleTileStartExpand') &&
+        !tileSource.includes('onStartExpand'),
+        'Drag-to-expand layout is removed; frames are enlarged only by double-click zoom'
     );
     assert.ok(
-        workspaceSource.includes('handleResetLayout') &&
-        workspaceSource.includes('calculateExpandedFitDimensions(\n                                columnWidth * span'),
-        'Workspace resets custom layouts and fits resized tiles to the frame aspect ratio'
+        tileSource.includes('onDoubleClick={() => {') &&
+        tileSource.includes('onZoomFrame(frameNumber)') &&
+        workspaceSource.includes('setZoomedFrame((prev) => (prev === frame ? null : frame))'),
+        'Double-clicking a frame toggles in-place zoom of that frame'
     );
 
     // 3. Zoom button zooms selected frame in place within the existing workspace (no replacement with CanvasLayout)
@@ -6095,9 +6085,9 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         'Tile reports its actual render size');
     assert.ok(workspaceSource.includes('optimalFit.isValid ?'), 'Unmeasurable sizes fall back to the default layout');
     assert.ok(
-        workspaceSource.includes('canResize={!isAnyZoomed && (expandedFrame === null || expandedFrame === frame)}') &&
+        !workspaceSource.includes('canResize=') &&
         workspaceSource.includes('isEditable={!isOtherExpanded}'),
-        'Other tiles stay visible but are not resizable/editable while a frame is zoomed',
+        'Other tiles stay visible but are not editable while a frame is zoomed',
     );
 
     // Type / Object ID controls

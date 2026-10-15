@@ -162,7 +162,7 @@
     min-height: 160px;
     height: 100%;
     opacity: 1;
-    // Own stacking context: header / resize handle z-indexes of a tile stay inside it,
+    // Own stacking context: header z-indexes of a tile stay inside it,
     // so they never show through a zoomed or expanded tile on top
     isolation: isolate;
 
@@ -221,37 +221,6 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
-}
-
-.cvat-multiframe-tile-resize-handle {
-    position: absolute;
-    bottom: 2px;
-    right: 2px;
-    width: 16px;
-    height: 16px;
-    z-index: 15;
-    cursor: nwse-resize;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: rgba(255, 255, 255, 0.45);
-    background: rgba(0, 0, 0, 0.45);
-    border-radius: 2px;
-    transition: color 0.15s ease, background 0.15s ease;
-    user-select: none;
-    pointer-events: auto;
-
-    &:hover,
-    &.cvat-multiframe-tile-resizing {
-        color: #1890ff;
-        background: rgba(24, 144, 255, 0.3);
-    }
-
-    .cvat-multiframe-resize-icon {
-        width: 10px;
-        height: 10px;
-        pointer-events: none;
-    }
 }
 
 .cvat-multiframe-tile-loading,

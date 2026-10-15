@@ -21,7 +21,6 @@ import {
     resolveSkeletonWrappingBox,
     calculateAutoZoomViewport,
     zoomViewportAtPoint,
-    calculateResizeZoomViewport,
     panViewport,
     centerViewportOnObject,
     calculateContainedDimensions,
@@ -41,9 +40,7 @@ interface Props {
     autoFollowEnabled?: boolean;
     isZoomedInPlace?: boolean;
     tileStyle?: React.CSSProperties;
-    canResize?: boolean;
     isEditable?: boolean;
-    onStartExpand?(frame: number, e: React.MouseEvent, tileEl: HTMLElement): void;
     onNavigateToFrame(frame: number): void;
     onZoomFrame?(frame: number): void;
     onFrameStatesLoaded?(frameNumber: number, states: any[]): void;
@@ -65,9 +62,7 @@ function MultiframeTile(props: Props): JSX.Element {
         autoFollowEnabled = true,
         isZoomedInPlace = false,
         tileStyle,
-        canResize = true,
         isEditable = true,
-        onStartExpand,
         onNavigateToFrame,
         onZoomFrame,
         onFrameStatesLoaded,
@@ -78,7 +73,6 @@ function MultiframeTile(props: Props): JSX.Element {
 
     const dispatch = useDispatch();
 
-    const tileRootRef = useRef<HTMLDivElement | null>(null);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
     const contentRef = useRef<HTMLDivElement | null>(null);
@@ -105,8 +99,6 @@ function MultiframeTile(props: Props): JSX.Element {
     const [manualViewport, setManualViewport] = useState<Viewport | null>(null);
     const [isPanning, setIsPanning] = useState<boolean>(false);
     const panStartRef = useRef<{ clientX: number; clientY: number; startViewport: Viewport } | null>(null);
-    const [isResizing, setIsResizing] = useState<boolean>(false);
-    const resizeStartRef = useRef<{ clientX: number; clientY: number; startViewport: Viewport } | null>(null);
 
     useEffect(() => {
         let isCancelled = false;
@@ -502,66 +494,6 @@ function MultiframeTile(props: Props): JSX.Element {
         };
     }, [isPanning, dimensions]);
 
-    // Drag-to-resize / drag-to-expand handler
-    const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
-        e.stopPropagation();
-        e.preventDefault();
-        if (e.button !== 0) return;
-
-        if (onStartExpand && tileRootRef.current) {
-            onStartExpand(frameNumber, e, tileRootRef.current);
-            return;
-        }
-
-        if (dimensions.width <= 0 || dimensions.height <= 0) return;
-
-        setIsResizing(true);
-        resizeStartRef.current = {
-            clientX: e.clientX,
-            clientY: e.clientY,
-            startViewport: { ...effectiveViewport },
-        };
-    }, [onStartExpand, frameNumber, dimensions, effectiveViewport]);
-
-    useEffect(() => {
-        if (!isResizing) return undefined;
-
-        const originalCursor = document.body.style.cursor;
-        const originalUserSelect = document.body.style.userSelect;
-        document.body.style.cursor = 'nwse-resize';
-        document.body.style.userSelect = 'none';
-
-        const onMouseMove = (e: MouseEvent): void => {
-            if (!resizeStartRef.current) return;
-            const dx = e.clientX - resizeStartRef.current.clientX;
-            const dy = e.clientY - resizeStartRef.current.clientY;
-
-            const newVp = calculateResizeZoomViewport(
-                resizeStartRef.current.startViewport,
-                dx,
-                dy,
-                dimensions.width,
-                dimensions.height,
-            );
-            setManualViewport(newVp);
-        };
-
-        const onMouseUp = (): void => {
-            setIsResizing(false);
-            resizeStartRef.current = null;
-        };
-
-        window.addEventListener('mousemove', onMouseMove);
-        window.addEventListener('mouseup', onMouseUp);
-
-        return () => {
-            document.body.style.cursor = originalCursor;
-            document.body.style.userSelect = originalUserSelect;
-            window.removeEventListener('mousemove', onMouseMove);
-            window.removeEventListener('mouseup', onMouseUp);
-        };
-    }, [isResizing, dimensions]);
-
     // Auto-Follow: Smoothly pan viewport to follow the object center during live dragging
     const handleAutoFollow = useCallback((objCenterX: number, objCenterY: number) => {
         if (!autoFollowEnabled || dimensions.width <= 0 || dimensions.height <= 0) return;
@@ -798,7 +730,6 @@ function MultiframeTile(props: Props): JSX.Element {
         'cvat-multiframe-tile',
         isActiveFrame ? 'cvat-multiframe-tile-active' : '',
         isTileZoomed ? 'cvat-multiframe-tile-zoomed' : '',
-        isResizing ? 'cvat-multiframe-tile-resizing' : '',
         isZoomedInPlace ? 'cvat-multiframe-tile-zoomed-in-place' : '',
     ].filter(Boolean).join(' ');
 
@@ -806,7 +737,6 @@ function MultiframeTile(props: Props): JSX.Element {
 
     return (
         <div
-            ref={tileRootRef}
             className={tileClassName}
             style={tileStyle}
             onClick={() => {
@@ -883,23 +813,6 @@ function MultiframeTile(props: Props): JSX.Element {
                         {`#${frameNumber}`}
                     </Text>
                 </div>
-
-                {/* Drag-to-resize / drag-to-expand handle at bottom-right corner of tile */}
-                {!loading && !error && canResize && (
-                    <div
-                        className={`cvat-multiframe-tile-resize-handle ${isResizing ? 'cvat-multiframe-tile-resizing' : ''}`}
-                        onMouseDown={handleResizeMouseDown}
-                        onClick={(e) => e.stopPropagation()}
-                        onDoubleClick={(e) => e.stopPropagation()}
-                        title='Drag to expand frame across workspace'
-                    >
-                        <svg viewBox='0 0 10 10' className='cvat-multiframe-resize-icon'>
-                            <line x1='8' y1='2' x2='2' y2='8' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />
-                            <line x1='9' y1='5' x2='5' y2='9' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />
-                            <line x1='9' y1='8' x2='8' y2='9' stroke='currentColor' strokeWidth='1.2' strokeLinecap='round' />
-                        </svg>
-                    </div>
-                )}
             </div>
         </div>
     );

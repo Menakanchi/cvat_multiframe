@@ -98,12 +98,8 @@ function describeObjectFilter(filter: ObjectFilterState): string {
 
 // Outer border of a zoomed-in-place tile (2.5px on each side), see styles.scss
 const ZOOMED_TILE_CHROME = 5;
-// Outer border of a regular tile (1px on each side), see styles.scss
-const TILE_CHROME = 2;
 // Grid padding (2px on each side), see styles.scss
 const GRID_PADDING = 4;
-// Gap between grid cells, see styles.scss
-const GRID_GAP = 6;
 
 interface Props {
     onClose(): void;
@@ -171,11 +167,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const [initialFetchDone, setInitialFetchDone] = useState<boolean>(false);
     const [zoomedFrame, setZoomedFrame] = useState<number | null>(null);
 
-    // Drag-to-Expand Workspace Tile State
     const gridRef = useRef<HTMLDivElement | null>(null);
-    const [expandedFrame, setExpandedFrame] = useState<number | null>(null);
-    const [tileLayoutSizes, setTileLayoutSizes] = useState<Record<number, { colSpan: number; minHeight: number }>>({});
-    const [_isExpanding, setIsExpanding] = useState<boolean>(false);
 
     // Fetch initial annotations for job
     useEffect(() => {
@@ -314,26 +306,20 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         gridRef.current = el;
         setGridElement(el);
     }, []);
-    const [gridDimensions, setGridDimensions] = useState<{ width: number; height: number; columns: number }>({
-        width: 0, height: 0, columns: 1,
-    });
+    const [gridDimensions, setGridDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
     const measureGrid = useCallback((): void => {
         const el = gridRef.current;
         if (!el) return;
         const width = Math.max(0, Math.floor(el.clientWidth - GRID_PADDING));
         const height = Math.max(0, Math.floor(el.clientHeight - GRID_PADDING));
-        // Number of grid columns currently in effect (depends on media queries and batch size)
-        const template = window.getComputedStyle(el).gridTemplateColumns;
-        const columns = Math.max(1, template && template !== 'none' ? template.trim().split(/\s+/).length : 1);
         setGridDimensions((prev) => (
-            prev.width === width && prev.height === height && prev.columns === columns ?
-                prev : { width, height, columns }
+            prev.width === width && prev.height === height ? prev : { width, height }
         ));
     }, []);
     useEffect(() => {
         const el = gridElement;
         if (!el) {
-            setGridDimensions({ width: 0, height: 0, columns: 1 });
+            setGridDimensions({ width: 0, height: 0 });
             return undefined;
         }
         measureGrid();
@@ -631,11 +617,6 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const totalBatches = getTotalBatches(rangeStart, rangeEnd, batchSize, frameNumbers);
     const batchFrames = getBatchFrames(batchIndex, rangeStart, rangeEnd, batchSize, frameNumbers);
 
-    // The column count changes with the batch size without resizing the grid element
-    useEffect(() => {
-        measureGrid();
-    }, [batchFrames.length, measureGrid]);
-
     const onUpdateRange = useCallback(() => {
         if (validation.isValid && hasValidFrames && inputStart !== null && inputEnd !== null) {
             setRangeStart(inputStart);
@@ -664,134 +645,32 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         }, 50);
     }, [dispatch]);
 
-    const handleResetLayout = useCallback((targetFrame?: number) => {
-        if (typeof targetFrame === 'number') {
-            setTileLayoutSizes((prev) => {
-                const next = { ...prev };
-                delete next[targetFrame];
-                return next;
-            });
-            if (zoomedFrame === targetFrame) {
-                setZoomedFrame(null);
-            }
-        } else {
-            setTileLayoutSizes({});
-            setZoomedFrame(null);
-            setExpandedFrame(null);
-        }
+    const handleResetLayout = useCallback(() => {
+        setZoomedFrame(null);
         setTimeout(() => {
             window.dispatchEvent(new Event('resize'));
         }, 50);
-    }, [zoomedFrame]);
+    }, []);
 
-    // Escape key restores layout when zoomed in place or expanded
+    // Escape key restores the grid when a frame is zoomed in place
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent): void => {
-            if (e.key === 'Escape') {
-                if (zoomedFrame !== null || Object.keys(tileLayoutSizes).length > 0 || expandedFrame !== null) {
-                    handleResetLayout();
-                }
+            if (e.key === 'Escape' && zoomedFrame !== null) {
+                handleResetLayout();
             }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => {
             window.removeEventListener('keydown', handleKeyDown);
         };
-    }, [zoomedFrame, tileLayoutSizes, expandedFrame, handleResetLayout]);
+    }, [zoomedFrame, handleResetLayout]);
 
-    // Restore grid if current batch frames no longer include expanded frame
+    // Restore grid if current batch frames no longer include the zoomed frame
     useEffect(() => {
-        if (expandedFrame !== null && !batchFrames.includes(expandedFrame)) {
-            handleResetLayout(expandedFrame);
+        if (zoomedFrame !== null && !batchFrames.includes(zoomedFrame)) {
+            handleResetLayout();
         }
-    }, [batchFrames, expandedFrame, handleResetLayout]);
-
-    // Drag-to-expand tile layout handler (expanding/shrinking layout area in grid)
-    const handleTileStartExpand = useCallback((frame: number, e: React.MouseEvent, tileEl: HTMLElement) => {
-        e.stopPropagation();
-        e.preventDefault();
-        if (e.button !== 0) return;
-
-        const gridEl = gridRef.current;
-        if (!gridEl || !tileEl) return;
-
-        if (frame !== currentFrame) {
-            dispatch(changeFrameAsync(frame));
-        }
-
-        const tileRect = tileEl.getBoundingClientRect();
-        const gridRect = gridEl.getBoundingClientRect();
-        const colWidth = Math.max(120, gridRect.width / 4);
-
-        const startX = e.clientX;
-        const startY = e.clientY;
-        const initialWidth = tileRect.width;
-        const initialHeight = tileRect.height;
-        const currentLayout = tileLayoutSizes[frame];
-        const initialColSpan = currentLayout?.colSpan || 1;
-        const initialMinHeight = currentLayout?.minHeight || initialHeight;
-
-        setIsExpanding(true);
-        setExpandedFrame(frame);
-
-        const originalCursor = document.body.style.cursor;
-        const originalUserSelect = document.body.style.userSelect;
-        document.body.style.cursor = 'nwse-resize';
-        document.body.style.userSelect = 'none';
-
-        let lastColSpan = initialColSpan;
-        let lastMinHeight = initialMinHeight;
-
-        const onMouseMove = (moveEvent: MouseEvent): void => {
-            const dx = moveEvent.clientX - startX;
-            const dy = moveEvent.clientY - startY;
-
-            const targetWidth = initialWidth + dx;
-            const targetHeight = initialHeight + dy;
-
-            let colSpan = 1;
-            if (targetWidth > colWidth * 3.1) {
-                colSpan = 4;
-            } else if (targetWidth > colWidth * 2.1) {
-                colSpan = 3;
-            } else if (targetWidth > colWidth * 1.2) {
-                colSpan = 2;
-            } else {
-                colSpan = 1;
-            }
-
-            const minHeight = Math.max(160, Math.min(800, Math.round(targetHeight)));
-            lastColSpan = colSpan;
-            lastMinHeight = minHeight;
-
-            setTileLayoutSizes((prev) => ({
-                ...prev,
-                [frame]: { colSpan, minHeight },
-            }));
-            window.dispatchEvent(new Event('resize'));
-        };
-
-        const onMouseUp = (): void => {
-            setIsExpanding(false);
-            setExpandedFrame(null);
-            document.body.style.cursor = originalCursor;
-            document.body.style.userSelect = originalUserSelect;
-            window.removeEventListener('mousemove', onMouseMove);
-            window.removeEventListener('mouseup', onMouseUp);
-
-            if (lastColSpan === 1 && lastMinHeight <= 180) {
-                setTileLayoutSizes((prev) => {
-                    const next = { ...prev };
-                    delete next[frame];
-                    return next;
-                });
-            }
-            window.dispatchEvent(new Event('resize'));
-        };
-
-        window.addEventListener('mousemove', onMouseMove);
-        window.addEventListener('mouseup', onMouseUp);
-    }, [currentFrame, dispatch, tileLayoutSizes]);
+    }, [batchFrames, zoomedFrame, handleResetLayout]);
 
     const handleTileSelectObject = useCallback((targetState: any) => {
         if (!targetState) return;
@@ -1002,7 +881,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                             {lastDeletion.undone ? 'Redo deletion' : 'Undo deletion'}
                         </Button>
                     )}
-                    {(zoomedFrame !== null || Object.keys(tileLayoutSizes).length > 0 || expandedFrame !== null) && (
+                    {zoomedFrame !== null && (
                         <Button
                             size='small'
                             type='primary'
@@ -1080,7 +959,6 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         const isThisZoomed = zoomedFrame === frame;
                         const isAnyZoomed = zoomedFrame !== null;
                         const isOtherExpanded = isAnyZoomed && zoomedFrame !== frame;
-                        const layoutSize = tileLayoutSizes[frame];
 
                         let tileStyle: React.CSSProperties | undefined;
                         if (isThisZoomed) {
@@ -1106,37 +984,6 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                                 minHeight: '520px',
                                 zIndex: 10,
                             };
-                        } else if (layoutSize) {
-                            let gridColumn: string | undefined;
-                            if (layoutSize.colSpan >= 4) {
-                                gridColumn = '1 / -1';
-                            } else if (layoutSize.colSpan > 1) {
-                                gridColumn = `span ${layoutSize.colSpan}`;
-                            }
-                            // Fit the tile to the frame aspect ratio inside the dragged area (no letterbox bars)
-                            const columns = Math.max(1, gridDimensions.columns);
-                            const span = Math.min(layoutSize.colSpan, columns);
-                            const columnWidth = (gridDimensions.width - GRID_GAP * (columns - 1)) / columns;
-                            const renderSize = frameRenderSizes[frame];
-                            const fit = calculateExpandedFitDimensions(
-                                columnWidth * span + GRID_GAP * (span - 1),
-                                layoutSize.minHeight,
-                                renderSize?.width ?? 0,
-                                renderSize?.height ?? 0,
-                                TILE_CHROME,
-                            );
-                            tileStyle = fit.isValid ? {
-                                gridColumn,
-                                width: `${fit.width}px`,
-                                height: `${fit.height}px`,
-                                minHeight: 0,
-                                justifySelf: 'start',
-                                zIndex: layoutSize.colSpan > 1 ? 5 : undefined,
-                            } : {
-                                gridColumn,
-                                minHeight: `${layoutSize.minHeight}px`,
-                                zIndex: layoutSize.colSpan > 1 ? 5 : undefined,
-                            };
                         }
 
                         return (
@@ -1156,9 +1003,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                                     autoFollowEnabled={autoFollowEnabled}
                                     isZoomedInPlace={isThisZoomed}
                                     tileStyle={tileStyle}
-                                    canResize={!isAnyZoomed && (expandedFrame === null || expandedFrame === frame)}
                                     isEditable={!isOtherExpanded}
-                                    onStartExpand={handleTileStartExpand}
                                     onNavigateToFrame={handleNavigateToFrame}
                                     onZoomFrame={handleZoomFrame}
                                     onFrameStatesLoaded={handleFrameStatesLoaded}
