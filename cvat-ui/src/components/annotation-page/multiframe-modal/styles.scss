@@ -185,6 +185,11 @@
     z-index: 5;
 
     .cvat-multiframe-tile-header {
+        background: rgba(16, 36, 60, 0.88);
+    }
+}
+
+.cvat-multiframe-tile-header {
     position: absolute;
     top: 0;
     left: 0;
