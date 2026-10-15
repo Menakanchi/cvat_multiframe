@@ -5955,8 +5955,8 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         'Resize handle on tile corner present'
     );
     assert.ok(
-        tileSource.includes('cvat-multiframe-restore-grid-btn'),
-        'Clear Restore Grid control on tile overlay present'
+        !tileSource.includes('cvat-multiframe-restore-grid-btn'),
+        'Tile overlay shows only the frame ID (no per-tile Restore Grid button)'
     );
     assert.ok(
         workspaceSource.includes('cvat-multiframe-restore-grid-top-btn'),
@@ -5971,7 +5971,7 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         'Placeholder styling defined in styles.scss'
     );
     assert.ok(
-        stylesSource.includes('.cvat-multiframe-restore-grid-btn'),
+        stylesSource.includes('.cvat-multiframe-restore-grid-top-btn'),
         'Restore grid button styling defined in styles.scss'
     );
 
@@ -6017,9 +6017,9 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         'Workspace tracks tileLayoutSizes and provides drag-to-expand layout handler'
     );
     assert.ok(
-        tileSource.includes('hasCustomLayout') &&
-        tileSource.includes('onResetLayout'),
-        'Tile handles custom layout and provides reset layout callback'
+        workspaceSource.includes('handleResetLayout') &&
+        workspaceSource.includes('calculateExpandedFitDimensions(\n                                columnWidth * span'),
+        'Workspace resets custom layouts and fits resized tiles to the frame aspect ratio'
     );
 
     // 3. Zoom button zooms selected frame in place within the existing workspace (no replacement with CanvasLayout)
@@ -6035,19 +6035,12 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     );
     assert.ok(
         tileSource.includes('isZoomedInPlace') &&
-        tileSource.includes('cvat-multiframe-zoom-out-btn'),
-        'Zoom button switches to Zoom Out when frame is zoomed in place'
-    );
-    assert.ok(
-        stylesSource.includes('.cvat-multiframe-zoom-out-btn'),
-        'Styles define clear, visible Zoom Out button'
+        !tileSource.includes('cvat-multiframe-zoom-out-btn') &&
+        tileSource.includes('onZoomFrame(frameNumber)'),
+        'Double-click toggles in-place zoom; the tile has no Zoom / Zoom Out buttons'
     );
 
     // 4. Clear Reset / Zoom Out actions
-    assert.ok(
-        tileSource.includes('cvat-multiframe-restore-grid-btn'),
-        'Tile overlay provides clear restore grid / zoom out action'
-    );
     assert.ok(
         workspaceSource.includes('cvat-multiframe-restore-grid-top-btn'),
         'Top controls bar provides restore grid button when layout is changed or zoomed'
@@ -6203,7 +6196,7 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
 
     // tiles: read-only display of the type matches and a clear indicator for frames without matches
     assert.ok(tile.includes('getTypeFilterMatches(frameStates, typeFilterLabel)'), 'Tile computes type matches');
-    assert.ok(tile.includes("className='cvat-multiframe-type-match-tag'"), 'Tile shows the type match count / None');
+    assert.ok(!tile.includes("className='cvat-multiframe-type-match-tag'"), 'Tile overlay shows only the frame ID');
     assert.ok(tile.includes('typeMatchedClientIDs={typeMatchedClientIDs}'), 'Overlay receives the type matches');
     assert.ok(overlay.includes('typeMatches ? typeMatches.has(state.clientID)'), 'Overlay highlights type matches');
     // Type mode zooms / follows like ID mode, using the union box of the matched objects

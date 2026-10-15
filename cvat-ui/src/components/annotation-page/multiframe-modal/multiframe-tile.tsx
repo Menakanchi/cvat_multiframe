@@ -7,12 +7,9 @@ import React, {
 } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { CombinedState } from 'reducers';
-import Tag from 'antd/lib/tag';
 import Spin from 'antd/lib/spin';
 import Alert from 'antd/lib/alert';
-import Button from 'antd/lib/button';
 import Text from 'antd/lib/typography/Text';
-import { FullscreenOutlined, FullscreenExitOutlined, AppstoreOutlined } from '@ant-design/icons';
 
 import { activateObject, updateAnnotationsAsync } from 'actions/annotation-actions';
 import {
@@ -27,7 +24,6 @@ import {
     calculateResizeZoomViewport,
     panViewport,
     centerViewportOnObject,
-    calculateZoomPercentage,
     calculateContainedDimensions,
     ContainedLayout,
     Viewport,
@@ -44,13 +40,10 @@ interface Props {
     autoZoomEnabled?: boolean;
     autoFollowEnabled?: boolean;
     isZoomedInPlace?: boolean;
-    hasCustomLayout?: boolean;
     tileStyle?: React.CSSProperties;
     canResize?: boolean;
     isEditable?: boolean;
     onStartExpand?(frame: number, e: React.MouseEvent, tileEl: HTMLElement): void;
-    onRestoreGrid?(): void;
-    onResetLayout?(frame: number): void;
     onNavigateToFrame(frame: number): void;
     onZoomFrame?(frame: number): void;
     onFrameStatesLoaded?(frameNumber: number, states: any[]): void;
@@ -71,13 +64,10 @@ function MultiframeTile(props: Props): JSX.Element {
         autoZoomEnabled = true,
         autoFollowEnabled = true,
         isZoomedInPlace = false,
-        hasCustomLayout = false,
         tileStyle,
         canResize = true,
         isEditable = true,
         onStartExpand,
-        onRestoreGrid,
-        onResetLayout,
         onNavigateToFrame,
         onZoomFrame,
         onFrameStatesLoaded,
@@ -294,7 +284,6 @@ function MultiframeTile(props: Props): JSX.Element {
     const renderWidth = targetViewport.width > 0 ? viewportWidth : dimensions.width;
     const renderHeight = targetViewport.height > 0 ? viewportHeight : dimensions.height;
 
-    const zoomPct = calculateZoomPercentage(effectiveViewport, dimensions.width);
 
     // Report the actual displayed frame size so an expanded tile can keep the real aspect ratio
     useEffect(() => {
@@ -512,11 +501,6 @@ function MultiframeTile(props: Props): JSX.Element {
             window.removeEventListener('mouseup', onMouseUp);
         };
     }, [isPanning, dimensions]);
-
-    const handleZoomReset = useCallback((e: React.MouseEvent) => {
-        e.stopPropagation();
-        setManualViewport(null);
-    }, []);
 
     // Drag-to-resize / drag-to-expand handler
     const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
@@ -893,141 +877,11 @@ function MultiframeTile(props: Props): JSX.Element {
                     )}
                 </div>
 
-                {/* Compact Floating Controls Overlay on top of the image */}
-                <div
-                    className='cvat-multiframe-tile-header cvat-multiframe-tile-overlay-controls'
-                    onClick={(e) => e.stopPropagation()}
-                    onDoubleClick={(e) => e.stopPropagation()}
-                    onMouseDown={(e) => e.stopPropagation()}
-                >
-                    <div className='cvat-multiframe-tile-header-left'>
-                        <Text strong className='cvat-multiframe-tile-frame-num'>
-                            {`#${frameNumber}`}
-                        </Text>
-                        {isActiveFrame ? (
-                            <Tag color='success' className='cvat-multiframe-badge'>
-                                ACTIVE
-                            </Tag>
-                        ) : (
-                            <Tag className='cvat-multiframe-badge'>REF</Tag>
-                        )}
-                    </div>
-
-                    {/* Per-Tile Frame Zoom Control */}
-                    <div className='cvat-multiframe-tile-header-center'>
-                        <Button
-                            size='small'
-                            type='primary'
-                            ghost
-                            className={`cvat-multiframe-zoom-btn ${isZoomedInPlace ? 'cvat-multiframe-zoom-out-btn' : ''}`}
-                            icon={isZoomedInPlace ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                if (onZoomFrame) {
-                                    onZoomFrame(frameNumber);
-                                }
-                            }}
-                            title={isZoomedInPlace ? 'Restore frame to normal grid size' : 'Zoom frame in place within workspace'}
-                        >
-                            {isZoomedInPlace ? 'Zoom Out' : 'Zoom'}
-                        </Button>
-                        <span className='cvat-multiframe-zoom-pct'>
-                            {`${zoomPct}%`}
-                        </span>
-                        {manualViewport !== null && (
-                            <Button
-                                size='small'
-                                type='link'
-                                className='cvat-multiframe-zoom-reset-btn'
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleZoomReset(e);
-                                }}
-                                title='Reset View'
-                            >
-                                Reset
-                            </Button>
-                        )}
-                        {(isZoomedInPlace || hasCustomLayout) && (
-                            <Button
-                                size='small'
-                                type='primary'
-                                ghost
-                                className='cvat-multiframe-restore-grid-btn'
-                                icon={<AppstoreOutlined />}
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (onResetLayout) {
-                                        onResetLayout(frameNumber);
-                                    } else if (onRestoreGrid) {
-                                        onRestoreGrid();
-                                    } else if (onZoomFrame) {
-                                        onZoomFrame(frameNumber);
-                                    }
-                                }}
-                                title='Restore original grid layout'
-                            >
-                                {isZoomedInPlace ? 'Zoom Out' : 'Restore Grid'}
-                            </Button>
-                        )}
-                    </div>
-
-                    <div className='cvat-multiframe-tile-header-right'>
-                        {typeMatches && !loading && (
-                            <Tag
-                                color={typeMatches.length > 0 ? 'blue' : 'error'}
-                                className='cvat-multiframe-type-match-tag'
-                                title={`Objects of type "${typeFilterLabel}" on this frame`}
-                            >
-                                {typeMatches.length > 0 ? `${typeFilterLabel}: ${typeMatches.length}` : 'None'}
-                            </Tag>
-                        )}
-                        {typeMatches && typeMatches.length > 0 && isTileZoomed && (
-                            <Tag color='geekblue' className='cvat-multiframe-badge'>
-                                Zoomed
-                            </Tag>
-                        )}
-                        {selectedObject && (
-                            <>
-                                {matchResult.status === 'MATCHED' && (
-                                    <>
-                                        <Tag color={matchResult.isOccluded ? 'warning' : 'cyan'}>
-                                            {matchResult.isOccluded ? 'Occluded' : 'Matched'}
-                                        </Tag>
-                                        {isTileZoomed && (
-                                            <Tag color='geekblue' className='cvat-multiframe-badge'>
-                                                Zoomed
-                                            </Tag>
-                                        )}
-                                    </>
-                                )}
-                                {matchResult.status === 'ABSENT_ON_FRAME' && (
-                                    <Tag color='error'>Absent</Tag>
-                                )}
-                                {matchResult.status === 'SKELETON_ABSENT' && (
-                                    <Tag color='error'>Skeleton Absent</Tag>
-                                )}
-                                {matchResult.status === 'NO_IDENTITY' && (
-                                    <Tag color='default' title='Shapes exist on one frame only'>
-                                        Not on this frame
-                                    </Tag>
-                                )}
-                            </>
-                        )}
-                        {!isActiveFrame && (
-                            <Button
-                                type='link'
-                                size='small'
-                                className='cvat-multiframe-jump-btn'
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    onNavigateToFrame(frameNumber);
-                                }}
-                            >
-                                Jump
-                            </Button>
-                        )}
-                    </div>
+                {/* Frame ID overlay on top of the image */}
+                <div className='cvat-multiframe-tile-header cvat-multiframe-tile-overlay-controls'>
+                    <Text strong className='cvat-multiframe-tile-frame-num'>
+                        {`#${frameNumber}`}
+                    </Text>
                 </div>
 
                 {/* Drag-to-resize / drag-to-expand handle at bottom-right corner of tile */}

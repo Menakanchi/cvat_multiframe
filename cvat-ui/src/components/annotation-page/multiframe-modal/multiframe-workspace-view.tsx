@@ -98,8 +98,12 @@ function describeObjectFilter(filter: ObjectFilterState): string {
 
 // Outer border of a zoomed-in-place tile (2.5px on each side), see styles.scss
 const ZOOMED_TILE_CHROME = 5;
+// Outer border of a regular tile (1px on each side), see styles.scss
+const TILE_CHROME = 2;
 // Grid padding (2px on each side), see styles.scss
 const GRID_PADDING = 4;
+// Gap between grid cells, see styles.scss
+const GRID_GAP = 6;
 
 interface Props {
     onClose(): void;
@@ -310,29 +314,37 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
         gridRef.current = el;
         setGridElement(el);
     }, []);
-    const [gridDimensions, setGridDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+    const [gridDimensions, setGridDimensions] = useState<{ width: number; height: number; columns: number }>({
+        width: 0, height: 0, columns: 1,
+    });
+    const measureGrid = useCallback((): void => {
+        const el = gridRef.current;
+        if (!el) return;
+        const width = Math.max(0, Math.floor(el.clientWidth - GRID_PADDING));
+        const height = Math.max(0, Math.floor(el.clientHeight - GRID_PADDING));
+        // Number of grid columns currently in effect (depends on media queries and batch size)
+        const template = window.getComputedStyle(el).gridTemplateColumns;
+        const columns = Math.max(1, template && template !== 'none' ? template.trim().split(/\s+/).length : 1);
+        setGridDimensions((prev) => (
+            prev.width === width && prev.height === height && prev.columns === columns ?
+                prev : { width, height, columns }
+        ));
+    }, []);
     useEffect(() => {
         const el = gridElement;
         if (!el) {
-            setGridDimensions({ width: 0, height: 0 });
+            setGridDimensions({ width: 0, height: 0, columns: 1 });
             return undefined;
         }
-        const updateSize = (): void => {
-            const width = Math.max(0, Math.floor(el.clientWidth - GRID_PADDING));
-            const height = Math.max(0, Math.floor(el.clientHeight - GRID_PADDING));
-            setGridDimensions((prev) => (
-                prev.width === width && prev.height === height ? prev : { width, height }
-            ));
-        };
-        updateSize();
+        measureGrid();
         if (typeof ResizeObserver !== 'undefined') {
-            const ro = new ResizeObserver(updateSize);
+            const ro = new ResizeObserver(measureGrid);
             ro.observe(el);
             return () => ro.disconnect();
         }
-        window.addEventListener('resize', updateSize);
-        return () => window.removeEventListener('resize', updateSize);
-    }, [gridElement]);
+        window.addEventListener('resize', measureGrid);
+        return () => window.removeEventListener('resize', measureGrid);
+    }, [gridElement, measureGrid]);
 
     // Actual displayed (render) size of each frame, reported by tiles
     const [frameRenderSizes, setFrameRenderSizes] = useState<Record<number, { width: number; height: number }>>({});
@@ -618,6 +630,11 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     const validation = validateFrameRange(inputStart, inputEnd, jobStartFrame, jobStopFrame, frameNumbers);
     const totalBatches = getTotalBatches(rangeStart, rangeEnd, batchSize, frameNumbers);
     const batchFrames = getBatchFrames(batchIndex, rangeStart, rangeEnd, batchSize, frameNumbers);
+
+    // The column count changes with the batch size without resizing the grid element
+    useEffect(() => {
+        measureGrid();
+    }, [batchFrames.length, measureGrid]);
 
     const onUpdateRange = useCallback(() => {
         if (validation.isValid && hasValidFrames && inputStart !== null && inputEnd !== null) {
@@ -1064,7 +1081,6 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                         const isAnyZoomed = zoomedFrame !== null;
                         const isOtherExpanded = isAnyZoomed && zoomedFrame !== frame;
                         const layoutSize = tileLayoutSizes[frame];
-                        const hasCustom = Boolean(layoutSize && (layoutSize.colSpan > 1 || layoutSize.minHeight > 180));
 
                         let tileStyle: React.CSSProperties | undefined;
                         if (isThisZoomed) {
@@ -1097,7 +1113,26 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                             } else if (layoutSize.colSpan > 1) {
                                 gridColumn = `span ${layoutSize.colSpan}`;
                             }
-                            tileStyle = {
+                            // Fit the tile to the frame aspect ratio inside the dragged area (no letterbox bars)
+                            const columns = Math.max(1, gridDimensions.columns);
+                            const span = Math.min(layoutSize.colSpan, columns);
+                            const columnWidth = (gridDimensions.width - GRID_GAP * (columns - 1)) / columns;
+                            const renderSize = frameRenderSizes[frame];
+                            const fit = calculateExpandedFitDimensions(
+                                columnWidth * span + GRID_GAP * (span - 1),
+                                layoutSize.minHeight,
+                                renderSize?.width ?? 0,
+                                renderSize?.height ?? 0,
+                                TILE_CHROME,
+                            );
+                            tileStyle = fit.isValid ? {
+                                gridColumn,
+                                width: `${fit.width}px`,
+                                height: `${fit.height}px`,
+                                minHeight: 0,
+                                justifySelf: 'start',
+                                zIndex: layoutSize.colSpan > 1 ? 5 : undefined,
+                            } : {
                                 gridColumn,
                                 minHeight: `${layoutSize.minHeight}px`,
                                 zIndex: layoutSize.colSpan > 1 ? 5 : undefined,
@@ -1120,13 +1155,10 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                                     autoZoomEnabled={autoZoomEnabled}
                                     autoFollowEnabled={autoFollowEnabled}
                                     isZoomedInPlace={isThisZoomed}
-                                    hasCustomLayout={hasCustom}
                                     tileStyle={tileStyle}
                                     canResize={!isAnyZoomed && (expandedFrame === null || expandedFrame === frame)}
                                     isEditable={!isOtherExpanded}
                                     onStartExpand={handleTileStartExpand}
-                                    onRestoreGrid={handleResetLayout}
-                                    onResetLayout={handleResetLayout}
                                     onNavigateToFrame={handleNavigateToFrame}
                                     onZoomFrame={handleZoomFrame}
                                     onFrameStatesLoaded={handleFrameStatesLoaded}

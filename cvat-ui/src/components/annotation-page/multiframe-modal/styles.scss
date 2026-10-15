@@ -139,27 +139,6 @@
     pointer-events: none;
 }
 
-.cvat-multiframe-restore-grid-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 0 6px !important;
-    height: 18px !important;
-    line-height: 18px !important;
-    font-size: 11px !important;
-    font-weight: 500;
-    color: #52c41a !important;
-    border: 1px solid #52c41a !important;
-    background: rgba(82, 196, 26, 0.15) !important;
-    border-radius: 3px;
-
-    &:hover {
-        color: #fff !important;
-        background: #52c41a !important;
-        border-color: #52c41a !important;
-    }
-}
-
 .cvat-multiframe-restore-grid-top-btn {
     color: #52c41a !important;
     border-color: #52c41a !important;
@@ -200,139 +179,28 @@
     }
 }
 
-.cvat-multiframe-zoom-out-btn {
-    color: #ff4d4f !important;
-    border-color: #ff4d4f !important;
-    background: rgba(255, 77, 79, 0.12) !important;
-
-    &:hover {
-        color: #fff !important;
-        background: #ff4d4f !important;
-        border-color: #ff4d4f !important;
-    }
-}
-
 .cvat-multiframe-tile-active {
     border: 2.5px solid #1890ff !important;
     box-shadow: 0 0 12px rgba(24, 144, 255, 0.75), inset 0 0 4px rgba(24, 144, 255, 0.3) !important;
     z-index: 5;
 
     .cvat-multiframe-tile-header {
-        opacity: 0.95;
-        background: rgba(16, 36, 60, 0.88);
-        border-bottom-color: rgba(24, 144, 255, 0.5);
-
-        &:hover {
-            opacity: 1;
-            background: rgba(16, 36, 60, 0.96);
-        }
-    }
-}
-
-.cvat-multiframe-tile-header {
     position: absolute;
     top: 0;
     left: 0;
-    right: 0;
     z-index: 10;
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 3px 6px;
+    padding: 2px 6px;
     background: rgba(18, 18, 18, 0.55);
-    backdrop-filter: blur(3px);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom-right-radius: 4px;
     color: #fff;
-    min-height: 24px;
     font-size: 11px;
-    pointer-events: auto;
-    opacity: 0.65;
-    transition: opacity 0.2s ease, background 0.2s ease, border-color 0.2s ease;
-
-    .cvat-multiframe-tile:hover &,
-    &:hover {
-        opacity: 1;
-        background: rgba(18, 18, 18, 0.88);
-        backdrop-filter: blur(6px);
-        border-bottom-color: rgba(255, 255, 255, 0.18);
-    }
-
-    .cvat-multiframe-tile-header-left,
-    .cvat-multiframe-tile-header-center,
-    .cvat-multiframe-tile-header-right {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        flex-wrap: nowrap;
-    }
-
-    .cvat-multiframe-tile-header-center {
-        gap: 4px;
-    }
-
-    .cvat-multiframe-zoom-btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 2px;
-        padding: 0 6px !important;
-        height: 18px !important;
-        line-height: 18px !important;
-        font-size: 11px !important;
-        font-weight: 500;
-        color: #1890ff !important;
-        border: 1px solid #1890ff !important;
-        background: rgba(24, 144, 255, 0.15) !important;
-        border-radius: 3px;
-
-        &:hover {
-            color: #fff !important;
-            background: #1890ff !important;
-            border-color: #1890ff !important;
-        }
-    }
-
-    .cvat-multiframe-zoom-pct {
-        font-size: 10px;
-        color: #d9d9d9;
-        min-width: 32px;
-        text-align: center;
-        user-select: none;
-    }
-
-    .cvat-multiframe-zoom-reset-btn {
-        padding: 0 4px !important;
-        height: 18px !important;
-        line-height: 18px !important;
-        font-size: 10px !important;
-        color: #faad14 !important;
-
-        &:hover {
-            color: #ffc53d !important;
-        }
-    }
+    pointer-events: none;
 
     .cvat-multiframe-tile-frame-num {
         color: #fff;
-        margin-right: 2px;
         font-size: 11px;
-    }
-
-    .cvat-multiframe-badge {
-        margin-right: 0;
-        font-size: 9px;
-        line-height: 14px;
-        padding: 0 3px;
-    }
-
-    .cvat-multiframe-jump-btn {
-        padding: 0 4px;
-        height: 18px;
-        font-size: 10px;
-        color: #40a9ff;
-
-        &:hover {
-            color: #69c0ff;
-        }
     }
 }
 
