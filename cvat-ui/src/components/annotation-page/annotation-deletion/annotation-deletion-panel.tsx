@@ -4,7 +4,7 @@
 
 import './styles.scss';
 import React, {
-    useCallback, useEffect, useState,
+    useCallback, useEffect, useRef, useState,
 } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import Button from 'antd/lib/button';
@@ -19,14 +19,12 @@ import Checkbox from 'antd/lib/checkbox';
 import notification from 'antd/lib/notification';
 import {
     DeleteOutlined,
-    MenuFoldOutlined,
-    MenuUnfoldOutlined,
     UndoOutlined,
     RedoOutlined,
 } from '@ant-design/icons';
 
 import { CombinedState } from 'reducers';
-import { fetchAnnotationsAsync } from 'actions/annotation-actions';
+import { fetchAnnotationsAsync, collapseSidebar } from 'actions/annotation-actions';
 import { shallowEqual } from 'utils/redux';
 import {
     validateFrameRange,
@@ -111,6 +109,7 @@ function AnnotationDeletionPanel(): JSX.Element {
         multiframeActive,
         multiframeStart,
         multiframeEnd,
+        objectsSidebarCollapsed,
     } = useSelector((state: CombinedState) => ({
         jobInstance: state.annotation.job.instance,
         currentFrame: state.annotation.player.frame.number,
@@ -120,6 +119,7 @@ function AnnotationDeletionPanel(): JSX.Element {
         multiframeActive: state.annotation.multiframe.active,
         multiframeStart: state.annotation.multiframe.startFrame,
         multiframeEnd: state.annotation.multiframe.endFrame,
+        objectsSidebarCollapsed: state.annotation.sidebarCollapsed,
     }), shallowEqual);
 
     const hasValidFrames = Array.isArray(frameNumbers) && frameNumbers.length > 0;
@@ -152,11 +152,24 @@ function AnnotationDeletionPanel(): JSX.Element {
             .filter((name: any) => typeof name === 'string' && name),
     ));
 
+    // Only one right sidebar is open at a time: opening this panel closes the objects sidebar
     const toggleCollapsed = useCallback(() => {
-        setCollapsed((prev) => !prev);
+        if (collapsed && !objectsSidebarCollapsed) {
+            dispatch(collapseSidebar());
+        }
+        setCollapsed(!collapsed);
         // let the canvas / Multi-Frame grid fit the new workspace width
         setTimeout(() => window.dispatchEvent(new Event('resize')), PANEL_TRANSITION_MS + 50);
-    }, []);
+    }, [collapsed, objectsSidebarCollapsed, dispatch]);
+
+    // ... and opening the objects sidebar closes this panel
+    const prevObjectsSidebarCollapsed = useRef<boolean>(objectsSidebarCollapsed);
+    useEffect(() => {
+        if (prevObjectsSidebarCollapsed.current && !objectsSidebarCollapsed) {
+            setCollapsed(true);
+        }
+        prevObjectsSidebarCollapsed.current = objectsSidebarCollapsed;
+    }, [objectsSidebarCollapsed]);
 
     // Default range when the panel is opened for the first time
     useEffect(() => {
@@ -379,7 +392,6 @@ function AnnotationDeletionPanel(): JSX.Element {
                 onClick={toggleCollapsed}
                 title={collapsed ? 'Show Delete Annotations' : 'Hide Delete Annotations'}
             >
-                {collapsed ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />}
                 <DeleteOutlined className='cvat-annotation-deletion-sider-icon' />
             </span>
 

@@ -6112,6 +6112,17 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         'Panel has a pull-out tab and starts collapsed',
     );
     assert.ok(
+        !panelSource.includes('MenuFoldOutlined') &&
+        panelSource.includes("<DeleteOutlined className='cvat-annotation-deletion-sider-icon' />"),
+        'The pull-out tab shows only the trash icon',
+    );
+    assert.ok(
+        panelSource.includes('if (collapsed && !objectsSidebarCollapsed) {') &&
+        panelSource.includes('dispatch(collapseSidebar());') &&
+        panelSource.includes('if (prevObjectsSidebarCollapsed.current && !objectsSidebarCollapsed) {'),
+        'Only one right sidebar is open at a time (deletion panel / objects sidebar)',
+    );
+    assert.ok(
         panelSource.includes('planAnnotationDeletion(') && panelSource.includes('executeAnnotationDeletion('),
         'Deletion uses a dry-run plan and executes the same plan',
     );
