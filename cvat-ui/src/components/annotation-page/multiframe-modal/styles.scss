@@ -78,8 +78,7 @@
     gap: 8px;
 
     .cvat-multiframe-autozoom-checkbox,
-    .cvat-multiframe-autofollow-checkbox,
-    .cvat-multiframe-focus-mode-checkbox {
+    .cvat-multiframe-autofollow-checkbox {
         color: #e0e0e0;
         margin-left: 4px;
     }
@@ -105,19 +104,6 @@
     overflow-y: auto;
     padding: 2px;
     min-height: 0;
-
-    &.cvat-multiframe-grid-focus-mode {
-        .cvat-multiframe-tile {
-            opacity: 0.35;
-            transition: opacity 0.25s ease, border-color 0.2s ease, box-shadow 0.2s ease;
-
-            &:hover,
-            &.cvat-multiframe-tile-active,
-            &.cvat-multiframe-tile-zoomed {
-                opacity: 1;
-            }
-        }
-    }
 
     @media (max-width: 1200px) {
         grid-template-columns: repeat(3, 1fr);

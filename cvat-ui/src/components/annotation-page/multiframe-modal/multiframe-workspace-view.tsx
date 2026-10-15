@@ -162,7 +162,6 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
     }, []);
     const [autoZoomEnabled, setAutoZoomEnabled] = useState<boolean>(true);
     const [autoFollowEnabled, setAutoFollowEnabled] = useState<boolean>(true);
-    const [focusModeEnabled, setFocusModeEnabled] = useState<boolean>(false);
     const [allJobStates, setAllJobStates] = useState<any[]>([]);
     const [initialFetchDone, setInitialFetchDone] = useState<boolean>(false);
     const [zoomedFrame, setZoomedFrame] = useState<number | null>(null);
@@ -844,13 +843,6 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
                     >
                         Auto-Follow
                     </Checkbox>
-                    <Checkbox
-                        checked={focusModeEnabled}
-                        onChange={(e) => setFocusModeEnabled(e.target.checked)}
-                        className='cvat-multiframe-focus-mode-checkbox'
-                    >
-                        Focus Mode
-                    </Checkbox>
                 </div>
 
                 {/* Right: Actions and Exit buttons */}
@@ -948,7 +940,7 @@ function MultiframeWorkspaceView(props: Props): JSX.Element {
             {hasValidFrames && batchFrames.length > 0 && (
                 <div
                     ref={setGridRef}
-                    className={`cvat-multiframe-grid ${focusModeEnabled ? 'cvat-multiframe-grid-focus-mode' : ''}`}
+                    className='cvat-multiframe-grid'
                     style={{
                         position: 'relative',
                         gridTemplateColumns: batchFrames.length < 4 ?

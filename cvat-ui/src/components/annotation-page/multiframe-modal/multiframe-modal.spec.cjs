@@ -5763,34 +5763,16 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
     assert.ok(overlayViewBox.length > 0, 'SVG overlay aligns with zoomed viewport');
     assert.deepStrictEqual(annotationData.points, [100, 200, 300, 400], 'Annotation coordinates never mutated by zoom');
 
-    // 2. Active-frame focus mode toggle & opacity reduction
+    // 2. Focus Mode is removed
     assert.ok(
-        workspaceSource.includes('cvat-multiframe-focus-mode-checkbox'),
-        'Focus Mode checkbox toggle must be present in toolbar'
-    );
-    assert.ok(
-        workspaceSource.includes('focusModeEnabled') && workspaceSource.includes('setFocusModeEnabled'),
-        'focusModeEnabled state must exist in workspace view'
-    );
-    assert.ok(
-        workspaceSource.includes('cvat-multiframe-grid-focus-mode'),
-        'cvat-multiframe-grid-focus-mode class conditionally applied to grid'
+        !workspaceSource.includes('focusModeEnabled') &&
+        !workspaceSource.includes('cvat-multiframe-focus-mode-checkbox') &&
+        !stylesSource.includes('cvat-multiframe-grid-focus-mode'),
+        'Focus Mode toggle, state and styles are removed'
     );
     assert.ok(
         tileSource.includes('cvat-multiframe-tile-zoomed'),
         'cvat-multiframe-tile-zoomed class applied to zoomed tiles'
-    );
-
-    // CSS rules verify reduced opacity for other tiles and full opacity for active/zoomed/hovered tiles
-    assert.ok(
-        stylesSource.includes('&.cvat-multiframe-grid-focus-mode') &&
-        stylesSource.includes('opacity: 0.35'),
-        'Inactive tiles must have reduced opacity (0.35) under focus mode'
-    );
-    assert.ok(
-        stylesSource.includes('&.cvat-multiframe-tile-active') &&
-        stylesSource.includes('&.cvat-multiframe-tile-zoomed'),
-        'Active and zoomed tiles must retain full visibility (opacity: 1) under focus mode'
     );
 
     // 3. Compact tile controls overlay and clear hover reveal
