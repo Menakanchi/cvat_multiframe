@@ -460,11 +460,6 @@ function AnnotationDeletionPanel(props: Props): JSX.Element {
                         {idResolution.message}
                     </Tag>
                 )}
-                <Text type='secondary' className='cvat-annotation-deletion-hint'>
-                    Choosing a type clears the Object ID and entering an ID resets the type.
-                    A Skeleton landmark ID targets its complete parent Skeleton.
-                    Locked objects are never deleted.
-                </Text>
             </div>
 
             {/* Preview: actual targets from a dry run */}
