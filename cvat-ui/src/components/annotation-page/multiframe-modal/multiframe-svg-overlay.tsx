@@ -300,8 +300,28 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
     const vpY = viewport?.y ?? 0;
     const vpW = (viewport?.width && viewport.width > 0) ? viewport.width : width;
     const vpH = (viewport?.height && viewport.height > 0) ? viewport.height : height;
-    const zoomScale = (vpW > 0 && width > 0) ? Math.max(1, width / vpW) : 1;
-    const scaleFactor = 1 / Math.sqrt(zoomScale);
+
+    // On-screen width of the overlay: points, handles and labels keep a constant size in screen pixels
+    // (like the native CVAT canvas), so they stay visible on small tiles and precise when zoomed in
+    const [screenWidth, setScreenWidth] = useState<number>(0);
+    useEffect(() => {
+        const svg = svgRef.current;
+        if (!svg) return undefined;
+        const updateWidth = (): void => {
+            const rectWidth = svg.getBoundingClientRect().width;
+            setScreenWidth((prev) => (prev === rectWidth ? prev : rectWidth));
+        };
+        updateWidth();
+        if (typeof ResizeObserver !== 'undefined') {
+            const ro = new ResizeObserver(updateWidth);
+            ro.observe(svg);
+            return () => ro.disconnect();
+        }
+        window.addEventListener('resize', updateWidth);
+        return () => window.removeEventListener('resize', updateWidth);
+    }, []);
+    const unitsPerPx = screenWidth > 0 && vpW > 0 ? vpW / screenWidth : 1;
+    const px = (screenPx: number): number => screenPx * unitsPerPx;
 
     // Cache parsed template per skeleton label
     const skeletonTemplatesCache = useMemo(() => {
@@ -693,10 +713,10 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                     let labelY = 20;
                     if (outerBox) {
                         labelX = outerBox.xtl;
-                        labelY = Math.max(12, outerBox.ytl - 6 * scaleFactor);
+                        labelY = Math.max(px(12), outerBox.ytl - px(6));
                     } else if (firstVisibleElement) {
                         [labelX] = firstVisibleElement.points;
-                        labelY = Math.max(12, firstVisibleElement.points[1] - 12 * scaleFactor);
+                        labelY = Math.max(px(12), firstVisibleElement.points[1] - px(12));
                     }
                     labelX += dragDx;
                     labelY += dragDy;
@@ -789,7 +809,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                 x={labelX}
                                 y={labelY}
                                 fill={isSkeletonMatched ? '#00f0ff' : (state.color || '#1890ff')}
-                                fontSize={Math.max(9, Math.round(11 * scaleFactor))}
+                                fontSize={px(11)}
                                 fontWeight={700}
                                 style={{
                                     pointerEvents: 'none',
@@ -878,7 +898,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                         <circle
                                             cx={x}
                                             cy={y}
-                                            r={Math.max(8, 16 * scaleFactor)}
+                                            r={px(10)}
                                             fill='transparent'
                                             style={{
                                                 pointerEvents: 'all',
@@ -903,7 +923,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                                 <circle
                                                     cx={x}
                                                     cy={y}
-                                                    r={Math.max(4, 10 * scaleFactor)}
+                                                    r={px(8)}
                                                     fill='none'
                                                     stroke='#00f0ff'
                                                     strokeWidth={2.5}
@@ -916,7 +936,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                                 <circle
                                                     cx={x}
                                                     cy={y}
-                                                    r={Math.max(2, 3.5 * scaleFactor)}
+                                                    r={px(4)}
                                                     fill='#00f0ff'
                                                     stroke='#ffffff'
                                                     strokeWidth={1}
@@ -925,10 +945,10 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                                 />
                                                 {/* Landmark name label */}
                                                 <text
-                                                    x={x + 8 * scaleFactor}
-                                                    y={y - 8 * scaleFactor}
+                                                    x={x + px(8)}
+                                                    y={y - px(8)}
                                                     fill='#00f0ff'
-                                                    fontSize={Math.max(9, Math.round(11 * scaleFactor))}
+                                                    fontSize={px(11)}
                                                     fontWeight={700}
                                                     style={{
                                                         pointerEvents: 'none',
@@ -944,7 +964,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                             <circle
                                                 cx={x}
                                                 cy={y}
-                                                r={Math.max(1.8, 3 * scaleFactor)}
+                                                r={px(3.5)}
                                                 fill={el.color || state.color || '#52c41a'}
                                                 stroke='#ffffff'
                                                 strokeWidth={1}
@@ -979,7 +999,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                 <circle
                                     cx={x}
                                     cy={y}
-                                    r={Math.max(8, 16 * scaleFactor)}
+                                    r={px(10)}
                                     fill='transparent'
                                     style={{
                                         pointerEvents: 'all',
@@ -998,7 +1018,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                         <circle
                                             cx={x}
                                             cy={y}
-                                            r={Math.max(4, 10 * scaleFactor)}
+                                            r={px(8)}
                                             fill='none'
                                             stroke='#00f0ff'
                                             strokeWidth={2.5}
@@ -1010,7 +1030,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                         <circle
                                             cx={x}
                                             cy={y}
-                                            r={Math.max(2, 3.5 * scaleFactor)}
+                                            r={px(4)}
                                             fill='#00f0ff'
                                             stroke='#fff'
                                             strokeWidth={1}
@@ -1018,10 +1038,10 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                             style={{ pointerEvents: 'none' }}
                                         />
                                         <text
-                                            x={x + 8 * scaleFactor}
-                                            y={y - 8 * scaleFactor}
+                                            x={x + px(8)}
+                                            y={y - px(8)}
                                             fill='#00f0ff'
-                                            fontSize={Math.max(9, Math.round(11 * scaleFactor))}
+                                            fontSize={px(11)}
                                             fontWeight={700}
                                             style={{
                                                 pointerEvents: 'none',
@@ -1036,7 +1056,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                                     <circle
                                         cx={x}
                                         cy={y}
-                                        r={Math.max(1.8, 3 * scaleFactor)}
+                                        r={px(3.5)}
                                         fill={state.color || '#1890ff'}
                                         stroke='#ffffff'
                                         strokeWidth={1}
@@ -1091,7 +1111,7 @@ function MultiframeSvgOverlay(props: Props): JSX.Element {
                     const cx = xtl + rectWidth / 2;
                     const cy = ytl + rectHeight / 2;
                     const transform = state.rotation ? `rotate(${state.rotation} ${cx} ${cy})` : undefined;
-                    const handleSize = Math.max(6, 10 * scaleFactor);
+                    const handleSize = px(8);
                     const halfH = handleSize / 2;
 
                     return (

@@ -6210,3 +6210,25 @@ console.log('\n=== All Real Multi-Frame Viewer Tests Passed Successfully! ===');
 
 
 
+
+// Overlay markers keep a constant on-screen size (like the native CVAT canvas)
+{
+    console.log('TC: Overlay points, handles and labels keep a constant screen size...');
+    const fs = require('fs');
+    const path = require('path');
+    const overlay = fs.readFileSync(path.resolve(__dirname, 'multiframe-svg-overlay.tsx'), 'utf8');
+
+    assert.ok(overlay.includes('const unitsPerPx = screenWidth > 0 && vpW > 0 ? vpW / screenWidth : 1;'),
+        'Screen pixels are converted to viewport units from the measured overlay width');
+    assert.ok(!overlay.includes('scaleFactor'), 'Marker sizes no longer depend on the image zoom level');
+    assert.ok(overlay.includes('r={px(3.5)}') && overlay.includes('r={px(10)}') &&
+        overlay.includes('const handleSize = px(8);'), 'Points, hit targets and handles use screen-pixel sizes');
+
+    // A 1920px-wide frame shown 480px wide (small tile) vs zoomed 4x into a 480px-wide window
+    const unitsPerPx = (vpW, screenWidth) => vpW / screenWidth;
+    const smallTileRadius = 3.5 * unitsPerPx(1920, 480);
+    const zoomedRadius = 3.5 * unitsPerPx(480, 480);
+    assert.strictEqual(smallTileRadius, 14, 'Small tile: point is large relative to the image (easy to see)');
+    assert.strictEqual(zoomedRadius, 3.5, 'Zoomed: point is small relative to the image (precise editing)');
+    console.log('  ✔ passed.');
+}
