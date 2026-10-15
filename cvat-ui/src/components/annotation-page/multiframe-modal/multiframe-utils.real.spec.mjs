@@ -838,4 +838,15 @@ await test('Multi-Frame range: at most 10 frames, centered default, bounded edit
     assert.equal(U.shiftFrameWindow(0, 9, -1, frames), null);
 });
 
+await test('Multi-Frame setup: window of N frames from a start frame', async () => {
+    const frames = Array.from({ length: 31 }, (_, i) => i); // 0..30
+    assert.equal(U.MIN_MULTIFRAME_FRAMES, 2);
+    assert.deepEqual(U.getFrameWindow(5, 10, frames), [5, 14]);
+    assert.deepEqual(U.getFrameWindow(5, 2, frames), [5, 6]);
+    assert.deepEqual(U.getFrameWindow(28, 10, frames), [21, 30], 'start moves back near the job end');
+    const sparse = [0, 5, 10, 15, 20];
+    assert.deepEqual(U.getFrameWindow(7, 2, sparse), [10, 15], 'start snaps to the next job frame');
+    assert.deepEqual(U.getFrameWindow(0, 10, sparse), [0, 20], 'never more frames than the job has');
+});
+
 console.log(`\n=== ${passed} actual-implementation tests passed ===`);

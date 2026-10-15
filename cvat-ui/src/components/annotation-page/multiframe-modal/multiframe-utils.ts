@@ -129,6 +129,22 @@ export function getDefaultFrameRange(
 
 /** The Multi-Frame workspace shows at most this many frames at once */
 export const MAX_MULTIFRAME_FRAMES = 10;
+/** The Multi-Frame setup lets the user choose at least this many frames */
+export const MIN_MULTIFRAME_FRAMES = 2;
+
+/**
+ * Window of `count` job frames that starts at `startFrame` (snapped to the next job frame).
+ * Near the end of the job the start moves back so that the window keeps `count` frames.
+ */
+export function getFrameWindow(startFrame: number, count: number, validFrameNumbers: number[]): [number, number] {
+    const frames = [...validFrameNumbers].sort((a, b) => a - b);
+    if (!frames.length) return [startFrame, startFrame];
+    const size = Math.max(1, Math.min(frames.length, Math.round(count)));
+    let startIdx = frames.findIndex((frame) => frame >= startFrame);
+    if (startIdx === -1) startIdx = frames.length - 1;
+    startIdx = Math.min(startIdx, frames.length - size);
+    return [frames[startIdx], frames[startIdx + size - 1]];
+}
 
 /** Job frames inside the inclusive range, ascending */
 export function getFramesInRange(startFrame: number, endFrame: number, validFrameNumbers: number[]): number[] {

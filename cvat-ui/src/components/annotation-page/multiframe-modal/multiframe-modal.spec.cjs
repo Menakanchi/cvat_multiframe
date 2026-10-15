@@ -6142,7 +6142,9 @@ console.log('=== Running Real Multi-Frame Viewer Test Suite ===\n');
         'The Multi-Frame button / shortcut opens the Multi-Frame tab instead of a modal',
     );
     assert.ok(
-        sidebarTabSource.includes('dispatch(activateMultiframeWorkspace(true, startFrame, endFrame, frameCount));') &&
+        sidebarTabSource.includes('dispatch(activateMultiframeWorkspace(true, windowStart, windowEnd, frameCount));') &&
+        sidebarTabSource.includes('getFrameWindow(startFrame, frameCount, validFrames)') &&
+        sidebarTabSource.includes('min={MIN_MULTIFRAME_FRAMES}') &&
         sidebarTabSource.includes('id={MULTIFRAME_SIDEBAR_CONTROLS_ID}') &&
         workspaceSource.includes('createPortal(controls, controlsTarget)'),
         'Multi-Frame is opened from the sidebar and its controls are rendered in the sidebar',
